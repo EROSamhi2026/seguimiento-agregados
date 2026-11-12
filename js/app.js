@@ -88,6 +88,10 @@
     return '<span class="badge ' + cls + '" title="' + esc(ops) + '">' + txt + '</span>' +
       (dias != null && ops !== OPS.OK ? '<div class="days">' + dias + (dias === 1 ? ' día' : ' días') + '</div>' : '');
   }
+  function marcaSolicitado(r) {
+    if (!r.solicitado_proveedor) return '';
+    return '<div class="mt-8"><span class="badge info" title="' + esc('Solicitado el ' + fechaHora(r.solicitado_en) + (r.solicitado_por ? ' por ' + r.solicitado_por : '')) + '">Solicitado al proveedor</span></div>';
+  }
   function badgeEstatus(est) {
     if (est === ESTATUS.CARG) return '<span class="badge ok plain">Cargado</span>';
     if (est === ESTATUS.PEND) return '<span class="badge neutral plain">Pendiente</span>';
@@ -158,6 +162,7 @@
     anios: [],
     iniciado: {},
     admin: false,
+    vista: false,
     consultaSucia: true
   };
   var CATALOGOS = [
@@ -227,8 +232,33 @@
       var d = await sb.from('destinatarios_alerta').select('id').limit(1);
       state.admin = !d.error && d.data.length > 0;
     }
-    var tab = $('.nav .tab[data-view="correos"]');
-    if (tab) tab.hidden = !state.admin;
+    // ¿Usuario de vista? (si aún no se corre 04_modo_vista.sql, nadie lo es)
+    var v = await sb.rpc('es_vista');
+    state.vista = !v.error && v.data === true;
+    if (state.vista) state.admin = false;
+    prepararPestanas();
+  }
+
+  // Pestaña "Por proveedor" (todos) y pestañas visibles según el tipo de usuario
+  function prepararPestanas() {
+    var nav = $('.nav');
+    if (!$('.tab[data-view="proveedores"]', nav)) {
+      var a = document.createElement('a');
+      a.className = 'tab'; a.href = '#proveedores'; a.dataset.view = 'proveedores';
+      a.innerHTML = icon('i-truck') + 'Por proveedor';
+      nav.insertBefore(a, $('.tab[data-view="catalogos"]', nav));
+    }
+    if (!$('#view-proveedores')) {
+      var sec = document.createElement('section');
+      sec.id = 'view-proveedores'; sec.className = 'view'; sec.dataset.view = 'proveedores'; sec.hidden = true;
+      $('main').appendChild(sec);
+    }
+    $$('.nav .tab').forEach(function (t) {
+      var vw = t.dataset.view;
+      t.hidden = state.vista ? vw !== 'proveedores' : (vw === 'correos' && !state.admin);
+    });
+    var sub = $('#app .brand-sub');
+    if (sub) sub.textContent = state.vista ? 'Modo vista · pendientes por proveedor' : 'Carta de agregados · servicios surtidos';
   }
 
   /* =========================================================================
@@ -1341,7 +1371,7 @@
         '<td class="c-date">' + isoADMY(r.fecha_solicitud) + '</td>' +
         '<td class="c-date">' + (r.fecha_carga ? isoADMY(r.fecha_carga) : '<span class="muted">—</span>') + '</td>' +
         '<td>' + badgeEstatus(r.estatus) + '</td>' +
-        '<td>' + badgeOps(r.estatus_operaciones, r.dias_transcurridos) + '</td>' +
+        '<td>' + badgeOps(r.estatus_operaciones, r.dias_transcurridos) + marcaSolicitado(r) + '</td>' +
         '<td class="c-notes">' + esc(r.notas || '') + '</td>' +
         '<td class="c-actions"><div class="row-actions">' + acc + '</div></td></tr>';
     }).join('');
@@ -1506,7 +1536,7 @@
   var CAMPOS_HIST = {
     anio_surtido: 'Año surtido', cliente_id: 'Cliente', proveedor_id: 'Proveedor', contrarrecibo: 'Contrarrecibo', nur: 'NUR', cpt: 'CPT',
     descripcion: 'Descripción', tipo_servicio_id: 'Tipo de servicio', solicitante_id: 'Solicitante', fecha_solicitud: 'Fecha solicitud',
-    fecha_carga: 'Fecha de carga', estatus: 'Estatus', notas: 'Notas', requiere_revision: 'Requiere revisión', eliminado: 'Dado de baja', motivo_baja: 'Motivo de baja'
+    fecha_carga: 'Fecha de carga', estatus: 'Estatus', notas: 'Notas', requiere_revision: 'Requiere revisión', eliminado: 'Dado de baja', motivo_baja: 'Motivo de baja', solicitado_proveedor: 'Solicitado al proveedor'
   };
   var CAT_DE = { cliente_id: 'clientes', proveedor_id: 'proveedores', tipo_servicio_id: 'tipos_servicio', solicitante_id: 'solicitantes' };
   function valorHist(k, v) {
@@ -1710,6 +1740,198 @@
     cargando(btn, false);
   }
 
+  /* =========================================================================
+     PENDIENTES POR PROVEEDOR (todos los usuarios; única pantalla del modo vista)
+     ========================================================================= */
+  var PV = { lista: [], provId: null, filas: [], sel: new Set(), filtro: 'todos', pedido: 0 };
+
+  function iniciarProveedores() {
+    var sec = $('#view-proveedores');
+    sec.innerHTML =
+      '<div class="pv-layout">' +
+        '<div class="card pv-side">' +
+          '<div class="card-pad" style="padding-bottom:10px">' +
+            '<h2 class="card-title">Pendientes por proveedor</h2>' +
+            '<p class="card-hint">Solo solicitudes en estatus PENDIENTE.</p>' +
+            '<div class="search mt-12"><svg><use href="#i-search"/></svg><input id="pv-q" class="field" type="search" placeholder="Buscar proveedor" autocomplete="off" aria-label="Buscar proveedor"></div>' +
+          '</div>' +
+          '<ul class="pv-list" id="pv-list" role="listbox" aria-label="Proveedores"></ul>' +
+        '</div>' +
+        '<div class="card" id="pv-main"></div>' +
+      '</div>';
+    $('#pv-q').addEventListener('input', pintarListaProveedores);
+    $('#pv-list').addEventListener('click', function (e) {
+      var li = e.target.closest('li[data-id]'); if (!li) return;
+      PV.provId = +li.dataset.id; PV.sel.clear(); PV.filtro = 'todos';
+      pintarListaProveedores(); cargarProveedor();
+    });
+    $('#pv-main').addEventListener('click', accionProveedor);
+    $('#pv-main').addEventListener('change', function (e) {
+      var t = e.target;
+      if (t.id === 'pv-all') { visiblesPV().forEach(function (r) { if (t.checked) PV.sel.add(r.id); else PV.sel.delete(r.id); }); pintarProveedor(); }
+      else if (t.dataset.pv) { var id = +t.dataset.pv; if (t.checked) PV.sel.add(id); else PV.sel.delete(id); pintarProveedor(); }
+    });
+    pintarProveedorVacio();
+  }
+
+  async function cargarListaProveedores() {
+    var r = await sb.from('v_pendientes_por_proveedor').select('*').order('pendientes', { ascending: false }).order('proveedor');
+    if (r.error) {
+      $('#pv-list').innerHTML = '<li class="muted" style="padding:14px 20px">' + esc(/v_pendientes_por_proveedor|PGRST|relation/i.test(r.error.message) ? 'Falta correr 04_modo_vista.sql en Supabase.' : mensajeError(r.error)) + '</li>';
+      return;
+    }
+    PV.lista = r.data;
+    pintarListaProveedores();
+    if (PV.provId) cargarProveedor();
+  }
+
+  function pintarListaProveedores() {
+    var q = norm(($('#pv-q') || {}).value || '');
+    var lista = PV.lista.filter(function (p) { return !q || norm(p.proveedor).indexOf(q) >= 0; });
+    var total = PV.lista.reduce(function (a, p) { return a + p.pendientes; }, 0);
+    $('#pv-list').innerHTML = (q ? '' : '<li class="pv-total"><span>' + PV.lista.length + ' proveedores</span><b class="num">' + total + ' pendientes</b></li>') +
+      (lista.length ? lista.map(function (p) {
+        return '<li data-id="' + p.proveedor_id + '" role="option" aria-selected="' + (p.proveedor_id === PV.provId) + '">' +
+          '<span class="pv-name">' + esc(p.proveedor) + '</span>' +
+          '<span class="pv-counts"><b class="num">' + p.pendientes + '</b>' +
+          (p.vencidos ? '<span class="pv-dot bad" title="' + p.vencidos + ' con más de 4 días">' + p.vencidos + '</span>' : '') +
+          (p.solicitados ? '<span class="pv-dot info" title="' + p.solicitados + ' ya solicitados al proveedor">' + p.solicitados + '</span>' : '') +
+          '</span></li>';
+      }).join('') : '<li class="muted" style="padding:14px 20px">Sin proveedores con pendientes.</li>');
+  }
+
+  function pintarProveedorVacio() {
+    $('#pv-main').innerHTML = '<div class="empty" style="padding:80px 20px"><strong>Elige un proveedor</strong>Verás sus agregados pendientes, podrás descargar el concentrado en Excel y marcarlos como solicitados.</div>';
+  }
+
+  async function cargarProveedor() {
+    var mio = ++PV.pedido;
+    var r;
+    try {
+      r = await traerTodo(function () {
+        return sb.from('v_agregados').select('*').eq('proveedor_id', PV.provId).eq('eliminado', false).eq('estatus', 'PENDIENTE')
+          .order('fecha_solicitud', { ascending: true }).order('id');
+      });
+    } catch (e) { toast('bad', 'No se pudo consultar', mensajeError(e)); return; }
+    if (mio !== PV.pedido) return;
+    PV.filas = r;
+    var ids = new Set(r.map(function (x) { return x.id; }));
+    PV.sel.forEach(function (id) { if (!ids.has(id)) PV.sel.delete(id); });
+    pintarProveedor();
+  }
+
+  function visiblesPV() {
+    return PV.filas.filter(function (r) {
+      return PV.filtro === 'todos' || (PV.filtro === 'sin' ? !r.solicitado_proveedor : r.solicitado_proveedor);
+    });
+  }
+
+  function pintarProveedor() {
+    if (!PV.provId) return pintarProveedorVacio();
+    var prov = nombreDe('proveedores', PV.provId) || ((PV.lista.filter(function (p) { return p.proveedor_id === PV.provId; })[0] || {}).proveedor) || '';
+    var vis = visiblesPV();
+    var nSol = PV.filas.filter(function (r) { return r.solicitado_proveedor; }).length;
+    var nVen = PV.filas.filter(function (r) { return r.estatus_operaciones === OPS.CAMBIO; }).length;
+    var nSel = PV.sel.size;
+    var enVista = vis.filter(function (r) { return PV.sel.has(r.id); }).length;
+    var wrapPrev = $('#pv-main .table-wrap'), scrollPrev = wrapPrev ? wrapPrev.scrollTop : 0;
+    var chip = function (k, t, n) { return '<button type="button" class="pv-chip" data-filtro="' + k + '" aria-pressed="' + (PV.filtro === k) + '">' + t + ' <span class="num">' + n + '</span></button>'; };
+
+    $('#pv-main').innerHTML =
+      '<div class="card-pad">' +
+        '<div class="card-head"><div style="min-width:0"><h2 class="card-title">' + esc(prov) + '</h2>' +
+          '<p class="card-hint"><b class="num">' + PV.filas.length + '</b> pendientes · <span style="color:var(--bad-ink)">' + nVen + ' con más de 4 días</span> · ' + nSol + ' solicitados al proveedor</p></div>' +
+          '<button type="button" class="btn-primary" data-pv-a="excel"' + (PV.filas.length ? '' : ' disabled') + '>' + icon('i-download') + 'Descargar Excel para el proveedor</button></div>' +
+        '<div class="toolbar mt-16">' +
+          chip('todos', 'Todos', PV.filas.length) + chip('sin', 'Sin solicitar', PV.filas.length - nSol) + chip('sol', 'Solicitados', nSol) +
+          '<span class="grow"></span>' +
+          (nSel ? '<span class="sel-bar"><span>' + nSel + (nSel === 1 ? ' seleccionado' : ' seleccionados') + '</span>' +
+            '<button type="button" class="btn-primary" data-pv-a="marcar">' + icon('i-check') + 'Marcar solicitado</button>' +
+            '<button type="button" class="btn-ghost btn-sm" data-pv-a="desmarcar">Quitar marca</button>' +
+            '<button type="button" class="icon-btn sm plain" data-pv-a="copiar" title="Copiar para correo" aria-label="Copiar para correo">' + icon('i-copy') + '</button>' +
+            '<button type="button" class="icon-btn sm plain" data-pv-a="limpiar" title="Quitar selección" aria-label="Quitar selección">' + icon('i-x') + '</button></span>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="table-wrap" style="max-height:calc(100vh - 300px)">' +
+        '<table class="grid"><thead><tr>' +
+          '<th class="c-sel"><input type="checkbox" id="pv-all" aria-label="Seleccionar todos"' + (vis.length && enVista === vis.length ? ' checked' : '') + '></th>' +
+          '<th>Contrarrecibo</th><th>NUR</th><th>CPT</th><th>Descripción</th><th>Tipo de servicio</th><th>Cliente</th><th>Fecha solicitud</th><th>Días</th><th>Solicitado al proveedor</th>' +
+        '</tr></thead><tbody>' +
+        (vis.length ? vis.map(function (r) {
+          var marcado = PV.sel.has(r.id);
+          return '<tr class="' + (marcado ? 'is-selected' : '') + '">' +
+            '<td class="c-sel"><input type="checkbox" data-pv="' + r.id + '"' + (marcado ? ' checked' : '') + ' aria-label="Seleccionar NUR ' + esc(r.nur) + '"></td>' +
+            '<td class="c-num">' + esc(r.contrarrecibo || '') + '</td><td class="c-nur">' + esc(r.nur) + '</td><td class="c-num">' + esc(r.cpt) + '</td>' +
+            '<td class="c-desc">' + esc(r.descripcion) + '</td><td>' + esc(r.tipo_servicio) + '</td><td>' + esc(r.cliente) + '</td>' +
+            '<td class="c-date">' + isoADMY(r.fecha_solicitud) + '</td>' +
+            '<td>' + badgeOps(r.estatus_operaciones, null).replace(/>(En tiempo|Cambio de estatus)</, '>' + r.dias_transcurridos + (r.dias_transcurridos === 1 ? ' día' : ' días') + '<') + '</td>' +
+            '<td>' + (r.solicitado_proveedor ? '<span class="badge info">Solicitado</span><div class="days">' + esc(fechaHora(r.solicitado_en)) + (r.solicitado_por ? ' · ' + esc(r.solicitado_por) : '') + '</div>' : '<span class="muted">—</span>') + '</td></tr>';
+        }).join('') : '<tr><td colspan="10"><div class="empty"><strong>Sin registros en este filtro</strong></div></td></tr>') +
+        '</tbody></table></div>';
+    var all = $('#pv-all'); if (all) all.indeterminate = enVista > 0 && enVista < vis.length;
+    var wrapNuevo = $('#pv-main .table-wrap'); if (wrapNuevo) wrapNuevo.scrollTop = scrollPrev;
+  }
+
+  async function marcarSolicitado(ids, valor) {
+    var r = await sb.rpc('marcar_solicitado', { p_ids: ids, p_valor: valor });
+    if (r.error) { toast('bad', 'No se pudo actualizar', mensajeError(r.error)); return false; }
+    toast('ok', valor ? 'Marcados como solicitados al proveedor' : 'Marca quitada', (r.data || 0) + ' registro' + (r.data === 1 ? '' : 's'));
+    PV.sel.clear();
+    state.consultaSucia = true;
+    await cargarListaProveedores();
+    return true;
+  }
+
+  async function accionProveedor(e) {
+    var f = e.target.closest('[data-filtro]');
+    if (f) { PV.filtro = f.dataset.filtro; pintarProveedor(); return; }
+    var b = e.target.closest('[data-pv-a]'); if (!b) return;
+    var a = b.dataset.pvA;
+    var seleccionados = PV.filas.filter(function (r) { return PV.sel.has(r.id); });
+    if (a === 'limpiar') { PV.sel.clear(); pintarProveedor(); }
+    else if (a === 'copiar') copiarParaCorreo(seleccionados);
+    else if (a === 'marcar') marcarSolicitado(seleccionados.map(function (r) { return r.id; }), true);
+    else if (a === 'desmarcar') {
+      var ok = await confirmar('¿Quitar la marca?', '<p class="card-hint">' + seleccionados.length + ' registro(s) dejarán de aparecer como solicitados al proveedor.</p>', 'Quitar marca');
+      if (ok) marcarSolicitado(seleccionados.map(function (r) { return r.id; }), false);
+    } else if (a === 'excel') {
+      // Se descarga lo seleccionado, o todos los pendientes si no hay selección
+      var filas = seleccionados.length ? seleccionados : PV.filas;
+      var prov = nombreDe('proveedores', PV.provId);
+      var wb = window.ExcelRespaldo.concentradoProveedor(window.XLSX, prov, filas, new Date());
+      window.XLSX.writeFile(wb, window.ExcelRespaldo.nombreConcentrado(prov, new Date()));
+      toast('ok', 'Excel descargado', filas.length + ' pendientes de ' + prov);
+      var porMarcar = filas.filter(function (r) { return !r.solicitado_proveedor; });
+      if (porMarcar.length) {
+        var si = await confirmar('¿Marcar como solicitados?', '<p class="card-hint">Si ya vas a enviar este Excel al proveedor, puedo marcar los <b>' + porMarcar.length + '</b> registros como <b>Solicitado al proveedor</b>.</p>', 'Sí, marcarlos');
+        if (si) marcarSolicitado(porMarcar.map(function (r) { return r.id; }), true);
+      }
+    }
+  }
+
+  // Estilos de esta pantalla
+  (function () {
+    var st = document.createElement('style');
+    st.textContent =
+      '.pv-layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px;align-items:start}' +
+      '@media (max-width:900px){.pv-layout{grid-template-columns:1fr}}' +
+      '.pv-layout>*{min-width:0}' +
+      '.pv-list{list-style:none;margin:0;padding:4px 6px 8px;max-height:calc(100vh - 240px);overflow-y:auto}' +
+      '.pv-list li[data-id]{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;font-size:13px}' +
+      '.pv-list li[data-id]:hover{background:var(--hover)}' +
+      '.pv-list li[aria-selected="true"]{background:var(--accent-soft);color:var(--accent-ink)}' +
+      '.pv-name{flex:1;min-width:0;font-weight:550;line-height:1.3}' +
+      '.pv-counts{display:flex;align-items:center;gap:5px;flex-shrink:0}' +
+      '.pv-counts b{font-size:14px;min-width:22px;text-align:right}' +
+      '.pv-dot{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:99px;font-variant-numeric:tabular-nums}' +
+      '.pv-dot.bad{background:var(--bad-soft);color:var(--bad-ink)}.pv-dot.info{background:var(--info-soft);color:var(--info-ink)}' +
+      '.pv-total{display:flex;justify-content:space-between;padding:6px 12px 10px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);margin-bottom:4px}' +
+      '.pv-chip{padding:6px 12px;border-radius:99px;border:1px solid var(--field-line);font-size:12.5px;font-weight:600;color:var(--muted)}' +
+      '.pv-chip[aria-pressed="true"]{border-color:var(--accent-hi);background:var(--accent-soft);color:var(--accent-ink)}' +
+      '.pv-chip span{margin-left:4px;opacity:.8}';
+    document.head.appendChild(st);
+  })();
+
   /* ---------- Capturados en esta sesión (para copiarlos juntos al correo) ---------- */
   var capturados = [];
   function iniciarNuevo() {
@@ -1737,12 +1959,14 @@
   /* =========================================================================
      10. NAVEGACIÓN Y ARRANQUE
      ========================================================================= */
-  var VISTAS = ['consulta', 'nuevo', 'catalogos', 'correos'];
+  var VISTAS = ['consulta', 'nuevo', 'catalogos', 'correos', 'proveedores'];
   function enrutar() {
     if ($('#app').hidden) return;
     var v = (location.hash || '').replace('#', '');
-    if (VISTAS.indexOf(v) < 0) v = 'consulta';
-    if (v === 'correos' && !state.admin) { v = 'consulta'; if (location.hash !== '#consulta') history.replaceState(null, '', '#consulta'); }
+    if (VISTAS.indexOf(v) < 0) v = state.vista ? 'proveedores' : 'consulta';
+    if (state.vista && v !== 'proveedores') v = 'proveedores';
+    if (v === 'correos' && !state.admin) v = 'consulta';
+    if (location.hash !== '#' + v) history.replaceState(null, '', '#' + v);
     cerrarPop();
     $$('.view').forEach(function (s) { s.hidden = s.dataset.view !== v; });
     $$('.nav .tab').forEach(function (t) { if (t.dataset.view === v) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current'); });
@@ -1757,8 +1981,11 @@
     } else if (v === 'correos') {
       if (!state.iniciado.correos) { state.iniciado.correos = true; iniciarCorreos(); }
       cargarDestinatarios(); actualizarContadorNav();
+    } else if (v === 'proveedores') {
+      if (!state.iniciado.proveedores) { state.iniciado.proveedores = true; iniciarProveedores(); }
+      cargarListaProveedores();
     }
-    document.title = { consulta: 'Consulta', nuevo: 'Nuevo agregado', catalogos: 'Catálogos', correos: 'Correos y respaldo' }[v] + ' · Seguimiento de Agregados';
+    document.title = { consulta: 'Consulta', nuevo: 'Nuevo agregado', catalogos: 'Catálogos', correos: 'Correos y respaldo', proveedores: 'Pendientes por proveedor' }[v] + ' · Seguimiento de Agregados';
   }
 
   function iniciarTema() {

@@ -17,9 +17,9 @@
   var ENCABEZADOS = [
     'CLIENTE', 'PROVEEDOR', 'CONTRARRECIBO', 'NUR', 'CPT', 'DESCRIPCION',
     'TIPO DE SERVICIO', 'SOLICITANTE', 'FECHA SOLICITUD', 'FECHA DE CARGA',
-    'ESTATUS', 'ESTATUS OPERACIONES', 'NOTAS', 'AÑO SURTIDO'
+    'ESTATUS', 'ESTATUS OPERACIONES', 'NOTAS', 'AÑO SURTIDO', 'SOLICITADO AL PROVEEDOR'
   ];
-  var ANCHOS = [18, 42, 15, 16, 16, 52, 22, 20, 15, 15, 16, 30, 40, 12];
+  var ANCHOS = [18, 42, 15, 16, 16, 52, 22, 20, 15, 15, 16, 30, 40, 12, 24];
 
   // 'AAAA-MM-DD' → número de serie de Excel (fecha real, no texto)
   function serieExcel(iso) {
@@ -29,6 +29,9 @@
     return (utc - Date.UTC(1899, 11, 30)) / 86400000;
   }
 
+  function fechaCorta(ts) {
+    return new Intl.DateTimeFormat('es-MX', { timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(ts));
+  }
   function celdaTexto(v) {
     return { t: 's', v: v == null ? '' : String(v) };
   }
@@ -49,7 +52,8 @@
       celdaTexto(r.tipo_servicio), celdaTexto(r.solicitante),
       celdaFecha(r.fecha_solicitud), celdaFecha(r.fecha_carga),
       celdaTexto(r.estatus), celdaTexto(r.estatus_operaciones), celdaTexto(r.notas),
-      celdaNumero(r.anio_surtido)
+      celdaNumero(r.anio_surtido),
+      celdaTexto(r.solicitado_proveedor ? 'SÍ' + (r.solicitado_en ? ' · ' + fechaCorta(r.solicitado_en) : '') : '')
     ];
     return extra ? fila.concat(extra) : fila;
   }
@@ -141,11 +145,41 @@
     return wb;
   }
 
+  // Concentrado de pendientes para enviar al proveedor
+  function concentradoProveedor(XLSX, proveedor, filas, fecha) {
+    var d = fecha || new Date();
+    var enc = ['CONTRARRECIBO', 'NUR', 'CPT', 'DESCRIPCION', 'TIPO DE SERVICIO', 'CLIENTE', 'FECHA SOLICITUD', 'DIAS'];
+    var ws = {};
+    function pon(r, c, celda) { ws[XLSX.utils.encode_cell({ r: r, c: c })] = celda; }
+    pon(0, 0, celdaTexto('CONCENTRADO DE SERVICIOS PENDIENTES'));
+    pon(1, 0, celdaTexto('PROVEEDOR: ' + proveedor));
+    pon(2, 0, celdaTexto('FECHA: ' + fechaCorta(d) + '    TOTAL: ' + filas.length));
+    enc.forEach(function (h, c) { pon(4, c, celdaTexto(h)); });
+    filas.forEach(function (r, i) {
+      [celdaTexto(r.contrarrecibo), celdaTexto(r.nur), celdaTexto(r.cpt), celdaTexto(r.descripcion), celdaTexto(r.tipo_servicio),
+        celdaTexto(r.cliente), celdaFecha(r.fecha_solicitud), celdaNumero(r.dias_transcurridos)]
+        .forEach(function (celda, c) { pon(5 + i, c, celda); });
+    });
+    var ultima = 4 + Math.max(filas.length, 1);
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: ultima, c: enc.length - 1 } });
+    ws['!cols'] = [16, 16, 16, 52, 22, 18, 15, 8].map(function (w) { return { wch: w }; });
+    ws['!merges'] = [0, 1, 2].map(function (r) { return { s: { r: r, c: 0 }, e: { r: r, c: enc.length - 1 } }; });
+    if (filas.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 4, c: 0 }, e: { r: ultima, c: enc.length - 1 } }) };
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'PENDIENTES');
+    return wb;
+  }
+  function nombreConcentrado(proveedor, fecha) {
+    var iso = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' }).format(fecha || new Date());
+    var limpio = String(proveedor || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+    return 'PENDIENTES_' + limpio + '_' + iso + '.xlsx';
+  }
+
   function nombreArchivo(fecha) {
     var d = fecha || new Date();
     var iso = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
     return 'RESPALDO_AGREGADOS_' + iso + '.xlsx';
   }
 
-  root.ExcelRespaldo = { libro: libro, consulta: consulta, nombreArchivo: nombreArchivo, ENCABEZADOS: ENCABEZADOS };
+  root.ExcelRespaldo = { libro: libro, consulta: consulta, concentradoProveedor: concentradoProveedor, nombreConcentrado: nombreConcentrado, nombreArchivo: nombreArchivo, ENCABEZADOS: ENCABEZADOS };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
