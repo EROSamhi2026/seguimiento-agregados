@@ -163,6 +163,7 @@
     iniciado: {},
     admin: false,
     vista: false,
+    catalogoCPT: false,
     consultaSucia: true
   };
   var CATALOGOS = [
@@ -211,6 +212,7 @@
     av.textContent = email.slice(0, 2).toUpperCase();
     av.title = email;
     await revisarAdmin();
+    if (!state.vista) await revisarCatalogoCPT();
     mostrar('app');
     try {
       await cargarCatalogos();
@@ -237,6 +239,12 @@
     state.vista = !v.error && v.data === true;
     if (state.vista) state.admin = false;
     prepararPestanas();
+  }
+
+  // ¿Existe el catálogo de procedimientos? (tabla catalogo_procedimientos)
+  async function revisarCatalogoCPT() {
+    var r = await sb.from('catalogo_procedimientos').select('id', { count: 'exact', head: true });
+    state.catalogoCPT = !r.error && (r.count || 0) > 0;
   }
 
   // Pestaña "Por proveedor" (todos) y pestañas visibles según el tipo de usuario
@@ -788,7 +796,15 @@
       '.sesion table{width:100%;margin-top:10px;border-collapse:collapse;font-size:12.5px}' +
       '.sesion th{text-align:left;font-size:11px;color:var(--muted);padding:5px 8px;border-bottom:1px solid var(--line)}' +
       '.sesion td{padding:6px 8px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}' +
-      '.sesion tr:last-child td{border-bottom:0}';
+      '.sesion tr:last-child td{border-bottom:0}' +
+      '.form-grid .col-5{grid-column:span 5}' +
+      '@media (max-width:900px){.form-grid .col-5{grid-column:span 6}}' +
+      '.opciones-cpt{display:flex;flex-wrap:wrap;gap:8px;align-items:center}' +
+      '.opciones-cpt button{padding:7px 12px;border-radius:10px;border:1px solid var(--accent-hi);background:var(--accent-soft);color:var(--accent-ink);font-size:12.5px;font-weight:600;text-align:left}' +
+      '.opciones-cpt button:hover{background:var(--accent);color:#fff}' +
+      '.campo-auto .field{background:var(--hover);cursor:default;border-style:dashed}' +
+      '.campo-auto .field:focus{box-shadow:none;border-color:var(--field-line)}' +
+      '.auto-tag{margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:1px 7px;border-radius:99px;background:var(--accent-soft);color:var(--accent-ink)}';
     document.head.appendChild(st);
   })();
 
@@ -800,6 +816,25 @@
     var reg = cfg.registro || null; // fila de v_agregados al editar
     contenedor.innerHTML = '';
     var form = $('#tpl-form').content.firstElementChild.cloneNode(true);
+    var modoCat = state.catalogoCPT;
+    if (modoCat) {
+      var w = function (n) { return $('[data-wrap="' + n + '"]', form); };
+      var col = function (el, n) { el.className = el.className.replace(/\bcol-\d+\b/, 'col-' + n); };
+      // Tipo y descripción pasan junto al CPT; solicitante y contrarrecibo ocupan el espacio que dejó el tipo
+      w('cpt').after(w('tipo_servicio_id'));
+      w('tipo_servicio_id').after(w('descripcion'));
+      col(w('solicitante_id'), 6); col(w('contrarrecibo'), 6);
+      col(w('nur'), 2); col(w('cpt'), 2); col(w('tipo_servicio_id'), 3); col(w('descripcion'), 5);
+      ['tipo_servicio_id', 'descripcion'].forEach(function (n) {
+        var box = w(n), inp = $('input', box), lbl = $('.label', box);
+        box.classList.add('campo-auto');
+        inp.readOnly = true; inp.tabIndex = -1; inp.removeAttribute('maxlength');
+        inp.placeholder = 'Se llena con el CPT';
+        if (lbl) lbl.insertAdjacentHTML('beforeend', '<span class="auto-tag">Automático</span>');
+      });
+      var hintTipo = $('.ac-hint', w('tipo_servicio_id')); if (hintTipo) hintTipo.remove();
+      $('[data-f="cpt"]', form).placeholder = 'Escribe el CPT';
+    }
     contenedor.appendChild(form);
     var uid = 'f' + Math.random().toString(36).slice(2, 8);
     function campo(n) { return $('[data-f="' + n + '"]', form); }
@@ -842,7 +877,7 @@
     var inTipo = campo('tipo_servicio');
     var tipoId = reg ? reg.tipo_servicio_id : null;
     if (reg) inTipo.value = nombreDe('tipos_servicio', tipoId);
-    var acHint = $('.ac-hint', wrap('tipo_servicio_id'));
+    var acHint = $('.ac-hint', wrap('tipo_servicio_id')) || document.createElement('p');
     var acHintTxt = acHint.innerHTML;
     function tipoDesconocido(txt) {
       if (!txt) { acHint.innerHTML = acHintTxt; return; }
@@ -857,7 +892,7 @@
         catch (e) { toast('bad', 'No se pudo dar de alta', mensajeError(e)); }
       };
     }
-    AutoExcel(inTipo, {
+    if (!modoCat) AutoExcel(inTipo, {
       items: function () { return state.cat.tipos_servicio.filter(function (x) { return x.activo || x.id === tipoId; }); },
       onType: function () { tipoId = null; acHint.innerHTML = acHintTxt; },
       onCommit: function (x) { tipoId = x.id; tocado.tipo_servicio_id = true; acHint.innerHTML = acHintTxt; validar(); },
@@ -982,7 +1017,94 @@
         if (b) b.onclick = function () { inDesc.value = d; quitarNota('cpt'); validar(); };
       }
     }, 400);
-    inCpt.addEventListener('input', revisarCpt);
+    if (!modoCat) inCpt.addEventListener('input', revisarCpt);
+
+    // CPT → tipo de servicio y descripción desde el catálogo de procedimientos
+    var cpt = {
+      resuelto: reg ? limpiar(reg.cpt).toUpperCase() : '', // CPT con el que están llenos tipo/descripción
+      error: null, pedido: 0, promesa: null, opciones: null
+    };
+    function escLike(v) { return v.replace(/[\\%_]/g, function (c) { return '\\' + c; }); }
+    function vaciarAuto() { tipoId = null; inTipo.value = ''; inDesc.value = ''; }
+    async function aplicarFila(f, origen) {
+      inDesc.value = limpiar(f.descripcion).toUpperCase();
+      var nombreTipo = limpiar(f.tipo_servicio).toUpperCase();
+      var t = state.cat.tipos_servicio.filter(function (x) { return norm(x.nombre) === norm(nombreTipo); })[0];
+      if (!t || !t.activo) {
+        try { t = await altaCatalogo('tipos_servicio', nombreTipo); }
+        catch (e) { cpt.error = 'No se pudo registrar el tipo “' + nombreTipo + '”: ' + mensajeError(e); vaciarAuto(); return; }
+      }
+      tipoId = t.id; inTipo.value = t.nombre;
+      quitarNota('cpt');
+      if (origen === 'historial') nota('cpt', 'warn', 'No está en el catálogo; se usaron los datos de un registro anterior con este CPT.');
+    }
+    async function resolverCpt() {
+      var v = limpiar(inCpt.value).toUpperCase();
+      if (v === cpt.resuelto && !cpt.error && !cpt.opciones) return;
+      var mio = ++cpt.pedido;
+      cpt.error = null; cpt.opciones = null; quitarNota('cpt');
+      if (!v) { cpt.resuelto = ''; vaciarAuto(); validar(); return; }
+      // Al editar: si regresa a su CPT original, se respetan sus datos de siempre
+      if (reg && v === limpiar(reg.cpt).toUpperCase()) {
+        tipoId = reg.tipo_servicio_id; inTipo.value = nombreDe('tipos_servicio', reg.tipo_servicio_id); inDesc.value = reg.descripcion || '';
+        cpt.resuelto = v; validar(); return;
+      }
+      vaciarAuto();
+      nota('cpt', 'info', '<span class="spinner" style="width:11px;height:11px;display:inline-block;vertical-align:-1px;margin-right:6px"></span>Buscando en el catálogo…');
+      var r = await sb.from('catalogo_procedimientos').select('cpt,descripcion,tipo_servicio,status').ilike('cpt', escLike(v)).limit(20);
+      if (mio !== cpt.pedido) return;
+      quitarNota('cpt');
+      if (r.error) { cpt.error = 'No se pudo consultar el catálogo: ' + mensajeError(r.error); tocado.cpt = true; validar(); return; }
+      var hab = r.data.filter(function (x) { return x.status === 'Habilitado'; });
+      var distintas = [];
+      hab.forEach(function (x) { if (!distintas.some(function (y) { return norm(y.descripcion) === norm(x.descripcion) && norm(y.tipo_servicio) === norm(x.tipo_servicio); })) distintas.push(x); });
+      if (distintas.length === 1) {
+        await aplicarFila(distintas[0], 'catalogo');
+      } else if (distintas.length > 1) {
+        cpt.opciones = distintas;
+        cpt.error = 'Elige una de las opciones de abajo.';
+        var caja = document.createElement('div');
+        caja.className = 'col-12 notice warn'; caja.dataset.opcionesCpt = '1';
+        caja.innerHTML = icon('i-alert') + '<div><b>El CPT ' + esc(v) + ' tiene ' + distintas.length + ' opciones en el catálogo.</b> Elige la correcta:' +
+          '<div class="opciones-cpt mt-8">' + distintas.map(function (x, i) {
+            return '<button type="button" data-opcion="' + i + '">' + esc(limpiar(x.descripcion).toUpperCase()) + ' · ' + esc(x.tipo_servicio) + '</button>';
+          }).join('') + '</div></div>';
+        wrap('descripcion').after(caja);
+        $$('[data-opcion]', caja).forEach(function (b) {
+          b.onmousedown = function (ev) { ev.preventDefault(); };
+          b.onclick = async function () {
+            var f = cpt.opciones[+b.dataset.opcion];
+            cpt.opciones = null; cpt.error = null; quitarNota('cpt');
+            await aplicarFila(f, 'catalogo'); cpt.resuelto = v; validar();
+          };
+        });
+      } else if (r.data.length) {
+        cpt.error = 'Este CPT está deshabilitado en el catálogo de procedimientos.';
+      } else {
+        // No está en el catálogo: se intenta con un registro anterior
+        var h = await sb.from('agregados').select('descripcion,tipo_servicio_id').eq('cpt', v).order('created_at', { ascending: false }).limit(1);
+        if (mio !== cpt.pedido) return;
+        if (!h.error && h.data.length) {
+          await aplicarFila({ descripcion: h.data[0].descripcion, tipo_servicio: nombreDe('tipos_servicio', h.data[0].tipo_servicio_id) }, 'historial');
+        } else {
+          cpt.error = 'Este CPT no existe en el catálogo de procedimientos.';
+        }
+      }
+      if (mio !== cpt.pedido) return;
+      if (!cpt.error) cpt.resuelto = v;
+      tocado.cpt = true;
+      validar();
+    }
+    function lanzarCpt() { cpt.promesa = resolverCpt(); return cpt.promesa; }
+    if (modoCat) {
+      var cptDebounce = debounce(lanzarCpt, 400);
+      inCpt.addEventListener('input', function () { cpt.pedido++; cpt.error = null; cpt.opciones = null; vaciarAuto(); quitarNota('cpt'); cptDebounce(); });
+      inCpt.addEventListener('blur', function () {
+        if (cpt.opciones) return; // está eligiendo una de las opciones
+        if (limpiar(inCpt.value).toUpperCase() !== cpt.resuelto || cpt.error) lanzarCpt();
+      });
+      inCpt.addEventListener('keydown', function (e) { if (e.key === 'Enter') lanzarCpt(); });
+    }
 
     function nota(campoN, tipo, html) {
       var w = wrap(campoN); quitarNota(campoN);
@@ -992,7 +1114,10 @@
       p.innerHTML = html;
       w.appendChild(p);
     }
-    function quitarNota(campoN) { var n = $('[data-nota]', wrap(campoN)); if (n) n.remove(); }
+    function quitarNota(campoN) {
+      var n = $('[data-nota]', wrap(campoN)); if (n) n.remove();
+      if (campoN === 'cpt') { var o = $('[data-opciones-cpt]', form); if (o) o.remove(); }
+    }
 
     // --- Validación: ningún dato obligatorio en blanco
     function errores() {
@@ -1002,7 +1127,7 @@
       if (!combos.cliente_id.get()) e.cliente_id = 'Elige el cliente.';
       if (!combos.proveedor_id.get()) e.proveedor_id = 'Elige el proveedor.';
       if (!combos.solicitante_id.get()) e.solicitante_id = 'Elige quién lo solicita.';
-      if (!tipoId) e.tipo_servicio_id = limpiar(inTipo.value) ? 'Elige un tipo de la lista (o dalo de alta).' : 'Escribe el tipo de servicio.';
+      if (!tipoId) e.tipo_servicio_id = modoCat ? 'Se llena al capturar un CPT válido.' : (limpiar(inTipo.value) ? 'Elige un tipo de la lista (o dalo de alta).' : 'Escribe el tipo de servicio.');
       var contra = limpiar(inContra.value);
       var contraOpcional = reg && reg.origen === 'EXCEL_2026' && !original.contrarrecibo;
       if (!contra && !contraOpcional) e.contrarrecibo = 'Escribe el contrarrecibo.';
@@ -1011,7 +1136,8 @@
       if (!nur) e.nur = 'Escribe el NUR.';
       else if (!/^\d+$/.test(nur) && !(reg && nur === original.nur)) e.nur = 'Solo números.';
       if (!limpiar(inCpt.value)) e.cpt = 'Escribe el CPT.';
-      if (!limpiar(inDesc.value)) e.descripcion = 'Escribe la descripción.';
+      else if (modoCat && cpt.error) e.cpt = cpt.error;
+      if (!limpiar(inDesc.value)) e.descripcion = modoCat ? 'Se llena al capturar un CPT válido.' : 'Escribe la descripción.';
       var fs = fSol.get();
       if (!fs) e.fecha_solicitud = 'Escribe o elige la fecha.';
       else if (fs === 'invalid') e.fecha_solicitud = 'Fecha no válida. Usa dd/mm/aaaa.';
@@ -1044,6 +1170,7 @@
     if (reg && reg.origen === 'EXCEL_2026' && !reg.contrarrecibo) {
       contraNota = function () { if (!$('[data-nota]', wrap('contrarrecibo')) && !limpiar(inContra.value)) nota('contrarrecibo', 'info', 'Venía vacío en el Excel; puedes completarlo.'); };
     }
+    if (contraNota) contraNota();
 
     // --- Botones
     var acciones = $('[data-actions]', form), errBox = $('[data-form-error]', form);
@@ -1056,8 +1183,12 @@
       ev.preventDefault();
       if (popAbierto) cerrarPop();
       intentoGuardar = true;
+      if (modoCat) {
+        if (limpiar(inCpt.value).toUpperCase() !== cpt.resuelto) lanzarCpt();
+        if (cpt.promesa) await cpt.promesa;
+      }
       // El tipo de servicio se resuelve al salir del campo; si quedó escrito exacto, se toma
-      if (!tipoId) { var ex = state.cat.tipos_servicio.filter(function (x) { return norm(x.nombre) === norm(inTipo.value); })[0]; if (ex) { tipoId = ex.id; inTipo.value = ex.nombre; } }
+      if (!modoCat && !tipoId) { var ex = state.cat.tipos_servicio.filter(function (x) { return norm(x.nombre) === norm(inTipo.value); })[0]; if (ex) { tipoId = ex.id; inTipo.value = ex.nombre; } }
       var e = validar(true);
       errBox.hidden = true;
       var claves = Object.keys(e);
@@ -1124,6 +1255,7 @@
     function limpiarParaSiguiente() {
       // Se conservan cliente, proveedor, solicitante, tipo, contrarrecibo, año y fecha de solicitud
       inNur.value = ''; inCpt.value = ''; inDesc.value = ''; inNotas.value = '';
+      if (modoCat) { tipoId = null; inTipo.value = ''; cpt.resuelto = ''; cpt.error = null; cpt.opciones = null; }
       fCar.set(null); sincronizarEstatus(); selEst.value = ESTATUS.PEND; estatusPrevio = ESTATUS.PEND;
       tocado = {}; intentoGuardar = false;
       ['nur', 'cpt'].forEach(quitarNota);
@@ -1143,7 +1275,7 @@
       if (e.key !== 'Enter' || e.defaultPrevented || e.target.tagName === 'TEXTAREA' || e.target.type === 'submit' || e.target.tagName === 'BUTTON') return;
       if (e.ctrlKey || e.metaKey) { e.preventDefault(); form.requestSubmit(); return; }
       e.preventDefault();
-      var focos = $$('input:not([disabled]):not([type=checkbox]), select:not([disabled]), textarea, .combo-btn', form).filter(function (x) { return x.offsetParent !== null; });
+      var focos = $$('input:not([disabled]):not([type=checkbox]), select:not([disabled]), textarea, .combo-btn', form).filter(function (x) { return x.offsetParent !== null && !x.readOnly; });
       var i = focos.indexOf(e.target);
       if (i >= 0 && focos[i + 1]) focos[i + 1].focus();
     });
@@ -1942,6 +2074,10 @@
       if (e.target.closest('[data-copiar-sesion]')) copiarParaCorreo(capturados);
       if (e.target.closest('[data-vaciar-sesion]')) { capturados = []; pintarSesion(); }
     });
+    if (state.catalogoCPT) {
+      var hint = $('#view-nuevo .card-hint');
+      if (hint) hint.innerHTML = 'Todos los campos con <span style="color:var(--bad)">*</span> son obligatorios. El <b>tipo de servicio</b> y la <b>descripción</b> se llenan solos con el CPT. Al guardar se conservan cliente, proveedor, solicitante, contrarrecibo y fecha para capturar el siguiente estudio más rápido.';
+    }
     Formulario($('#form-nuevo'), { modo: 'nuevo', onCreado: function (r) { capturados.push(r); pintarSesion(); } });
   }
   function pintarSesion() {
