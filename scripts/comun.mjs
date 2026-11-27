@@ -1,4 +1,12 @@
 /*
+  FUNCIONES COMPARTIDAS de alerta.mjs y respaldo.mjs
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
+  Corre en GitHub Actions (no en la página). Se conecta a Supabase con los
+  Secrets SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY y envía correo por SMTP
+  con SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS y MAIL_FROM.
+  Aquí está la conexión a Supabase de las automatizaciones, el envío de correo y la plantilla de los correos.
+*/
+/*
   Funciones compartidas por alerta.mjs y respaldo.mjs (corren en GitHub Actions).
   Variables necesarias (GitHub → Settings → Secrets and variables → Actions):
     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,

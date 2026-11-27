@@ -1,5 +1,6 @@
 /*
   RESPALDO SEMANAL — cada viernes 5:00 pm (hora de México) desde GitHub Actions
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
   1. Descarga TODOS los registros (incluye bajas) y los catálogos.
   2. Genera el Excel con el formato del archivo original.
   3. Lo guarda en el bucket PRIVADO "respaldos" de Supabase Storage.

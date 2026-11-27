@@ -1,5 +1,6 @@
 /*
   ALERTAS DIARIAS — lunes a viernes 9:00 am (hora de México), desde GitHub Actions
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
   Envía dos correos independientes a quienes tienen "Alerta" activada:
 
     1. VENCIDAS:    solicitudes con MÁS de 4 días sin fecha de carga.

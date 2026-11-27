@@ -1,9 +1,17 @@
 /*
-  Conexión a Supabase — EDITA ESTE ARCHIVO (paso 4 del README)
-  Pega los datos de Supabase → Project Settings → API:
-    • Project URL
-    • anon / publishable key  (es pública por diseño; la protección la dan el login y las reglas de la base)
-  NUNCA pongas aquí la service_role / secret key.
+  ============================================================================
+  CONEXIÓN DE LA PÁGINA A SUPABASE
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
+  ----------------------------------------------------------------------------
+  Proyecto Supabase: "seguimiento-agregados" (región us-east-2),
+  organización "homologador".
+  Los datos salen de Supabase → Project Settings → API Keys / Data API:
+    • SUPABASE_URL ........ Project URL (sin /rest/v1/ al final)
+    • SUPABASE_ANON_KEY ... llave "anon public" (pestaña Legacy API Keys)
+  La llave anon es PÚBLICA por diseño: cualquiera que abra la página la ve.
+  Lo que protege los datos es el inicio de sesión y las reglas (RLS) de la base.
+  NUNCA pongas aquí la llave service_role / secret.
+  ============================================================================
 */
 window.APP_CONFIG = {
   SUPABASE_URL: 'https://ujqzdmojkxhxpodlzcad.supabase.co',

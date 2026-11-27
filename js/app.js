@@ -1,18 +1,37 @@
 /*
   ============================================================================
-  Seguimiento de Carta de Agregados — lógica de la página
+  SEGUIMIENTO DE CARTA DE AGREGADOS — js/app.js
   ----------------------------------------------------------------------------
-  Módulos (en este orden):
-    1. Utilidades (fechas en hora de México, texto, avisos)
-    2. Conexión a Supabase y sesión
-    3. Catálogos en memoria
-    4. Componentes: lista seleccionable, calendario, autocompletado tipo Excel
-    5. Formulario de agregado (alta y edición)
-    6. Consulta (tabla, filtros, indicadores, exportar)
-    7. Acciones por registro (cargar, editar, baja, historial)
-    8. Catálogos (pantalla)
-    9. Correos y respaldo (pantalla)
-   10. Navegación y arranque
+  Autor:        Guillermo Navarrete (gnavarrete@amhi.mx)
+  Proyecto:     Sistema de altas, bajas, cambios y consultas de servicios
+                agregados. Sustituye la hoja "AGREGADOS 2026" del Excel.
+  Base de datos: Supabase (proyecto "seguimiento-agregados", us-east-2).
+                La conexión la tomo de config.js (URL y llave pública anon).
+  Publicación:  GitHub Pages — https://erosamhi2026.github.io/seguimiento-agregados/
+
+  Este es el archivo principal. Aquí está toda la lógica de la página.
+  Tipos de usuario que manejo:
+    • Normal ........ consulta, captura, edita, da de baja, catálogos.
+    • Administrador . además ve "Correos y respaldo" (tabla administradores).
+    • Vista ......... solo "Por proveedor": ve pendientes, descarga el Excel
+                      concentrado y marca "Solicitado al proveedor"
+                      (tabla usuarios_vista).
+  La base de datos también aplica estas reglas (RLS); lo de la pantalla es
+  solo para que cada quien vea lo que le toca.
+
+  Cómo está organizado (busca estos títulos dentro del archivo):
+     1. Utilidades (fechas en hora de México, texto, avisos)
+     2. Conexión a Supabase y sesión
+     3. Catálogos en memoria
+     4. Componentes: lista seleccionable, calendario, autocompletado tipo Excel
+   4.4 Copiar para correo
+     5. Formulario de agregado (alta y edición) + CPT automático por catálogo
+     6. Consulta (tabla, filtros, indicadores, exportar)
+     7. Acciones por registro (cargar, editar, baja, historial)
+     8. Catálogos (pantalla)
+     9. Correos y respaldo (pantalla, solo administrador)
+        Pendientes por proveedor (modo vista)
+    10. Navegación y arranque
   ============================================================================
 */
 (function () {
@@ -29,33 +48,45 @@
 
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  // Escapo texto antes de meterlo al HTML para que nadie pueda inyectar código con un nombre o una nota.
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
   // Normaliza para comparar: sin acentos, mayúsculas, sin espacios dobles
+  // Normalizo texto para comparar: sin acentos, en mayúsculas y sin espacios dobles (así "Óptica" = "OPTICA").
   function norm(s) {
     return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\u00A0]+/g, ' ').trim().toUpperCase();
   }
+  // Igual que norm() pero además quito todo lo que no sea letra o número; lo uso para detectar nombres repetidos.
   function compact(s) { return norm(s).replace(/[^A-Z0-9]/g, ''); }
+  // Quito espacios de más (incluidos los espacios "duros" que venían pegados del Excel).
   function limpiar(s) { return String(s == null ? '' : s).replace(/[\s\u00A0]+/g, ' ').trim(); }
+  // Espero a que el usuario deje de teclear unos milisegundos antes de ejecutar la función (para no consultar en cada letra).
   function debounce(fn, ms) { var t; return function () { var a = arguments, me = this; clearTimeout(t); t = setTimeout(function () { fn.apply(me, a); }, ms); }; }
+  // Devuelvo el SVG de un ícono del "sprite" que está al inicio de index.html.
   function icon(id, cls) { return '<svg' + (cls ? ' class="' + cls + '"' : '') + ' aria-hidden="true"><use href="#' + id + '"/></svg>'; }
 
   // Fechas: siempre 'AAAA-MM-DD' (como las guarda la base), en hora de México
+  // Fecha de hoy en hora de México, formato AAAA-MM-DD (como la guarda la base).
   function hoyISO() {
     return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   }
+  // Año en curso en hora de México; es el valor por defecto de "Año surtido".
   function anioActual() { return +hoyISO().slice(0, 4); }
+  // Convierto AAAA-MM-DD a dd/mm/aaaa para mostrarla en pantalla.
   function isoADMY(iso) { if (!iso) return ''; var p = String(iso).slice(0, 10).split('-'); return p[2] + '/' + p[1] + '/' + p[0]; }
+  // Reviso que una fecha exista de verdad (por ejemplo, que no sea 31/02).
   function isoValida(y, m, d) {
     var dt = new Date(Date.UTC(y, m - 1, d));
     return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
   }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  // Armo la fecha AAAA-MM-DD a partir de año, mes y día.
   function aISO(y, m, d) { return y + '-' + pad2(m) + '-' + pad2(d); }
   // Acepta 5/3/26, 05/03/2026, 5-3-2026, 05032026 → '2026-03-05'
+  // Leo lo que el usuario escribió (5/3/26, 05/03/2026, 05032026) y lo convierto a AAAA-MM-DD; si no es válida regreso "invalid".
   function dmyAISO(txt) {
     var s = String(txt || '').trim();
     if (!s) return null;
@@ -66,32 +97,38 @@
     if (y < 2000 || y > 2100 || !isoValida(y, mo, d)) return 'invalid';
     return aISO(y, mo, d);
   }
+  // Cuento los días naturales entre dos fechas.
   function diasEntre(isoA, isoB) {
     var a = isoA.split('-'), b = isoB.split('-');
     return Math.round((Date.UTC(+b[0], b[1] - 1, +b[2]) - Date.UTC(+a[0], a[1] - 1, +a[2])) / 86400000);
   }
+  // Muestro fecha y hora de un registro (historial, bajas) en hora de México.
   function fechaHora(ts) {
     if (!ts) return '';
     return new Date(ts).toLocaleString('es-MX', { timeZone: TZ, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
   // Estatus operaciones igual que la fórmula del Excel / la vista de la base
+  // Calculo el ESTATUS OPERACIONES igual que la fórmula del Excel original: COMPLETADO si ya se cargó, EN TIEMPO hasta 4 días, si no CAMBIO DE ESTATUS OPERACIONES.
   function estatusOps(fechaSolicitud, estatus, fechaCarga) {
     if (fechaCarga || estatus === ESTATUS.CARG) return { ops: OPS.OK, dias: null };
     if (!fechaSolicitud) return { ops: '', dias: null };
     var d = diasEntre(fechaSolicitud, hoyISO());
     return { ops: d <= DIAS_LIMITE ? OPS.TIEMPO : OPS.CAMBIO, dias: d };
   }
+  // Pinto la etiqueta de color del estatus operaciones (verde, ámbar o rojo) con los días transcurridos.
   function badgeOps(ops, dias) {
     var cls = ops === OPS.OK ? 'ok' : ops === OPS.TIEMPO ? 'warn' : ops === OPS.CAMBIO ? 'bad' : 'neutral';
     var txt = ops === OPS.OK ? 'Completado' : ops === OPS.TIEMPO ? 'En tiempo' : ops === OPS.CAMBIO ? 'Cambio de estatus' : '—';
     return '<span class="badge ' + cls + '" title="' + esc(ops) + '">' + txt + '</span>' +
       (dias != null && ops !== OPS.OK ? '<div class="days">' + dias + (dias === 1 ? ' día' : ' días') + '</div>' : '');
   }
+  // Etiqueta azul "Solicitado al proveedor" que ven los usuarios normales en Consulta.
   function marcaSolicitado(r) {
     if (!r.solicitado_proveedor) return '';
     return '<div class="mt-8"><span class="badge info" title="' + esc('Solicitado el ' + fechaHora(r.solicitado_en) + (r.solicitado_por ? ' por ' + r.solicitado_por : '')) + '">Solicitado al proveedor</span></div>';
   }
+  // Etiqueta del estatus (Cargado / Pendiente / Aclaración).
   function badgeEstatus(est) {
     if (est === ESTATUS.CARG) return '<span class="badge ok plain">Cargado</span>';
     if (est === ESTATUS.PEND) return '<span class="badge neutral plain">Pendiente</span>';
@@ -99,6 +136,7 @@
   }
 
   // Avisos (toast)
+  // Muestro los avisos que aparecen abajo a la derecha (verde = bien, rojo = error).
   function toast(tipo, titulo, detalle) {
     var box = $('#toasts');
     var el = document.createElement('div');
@@ -111,6 +149,7 @@
   }
 
   // Traduce errores de la base a mensajes claros
+  // Traduzco los errores técnicos de Supabase a mensajes entendibles para el usuario.
   function mensajeError(err) {
     if (!err) return 'Error desconocido.';
     var m = (err.message || String(err));
@@ -127,6 +166,7 @@
   }
 
   // Diálogo de confirmación que devuelve una promesa
+  // Ventana de confirmación (Sí / Cancelar) que regresa una promesa con la respuesta.
   function confirmar(titulo, html, textoSi, peligro) {
     return new Promise(function (resolve) {
       var dlg = $('#dlg-confirm');
@@ -144,6 +184,7 @@
     });
   }
 
+  // Pongo un botón en modo "Guardando…" mientras espero a la base, para evitar doble clic.
   function cargando(btn, on, texto) {
     if (!btn) return;
     if (on) { btn.dataset.html = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>' + esc(texto || 'Guardando…'); }
@@ -173,17 +214,20 @@
     { key: 'tipos_servicio', titulo: 'Tipos de servicio', singular: 'tipo de servicio' }
   ];
 
+  // Reviso que config.js tenga la URL y la llave reales de Supabase (y no los textos de ejemplo).
   function configurado() {
     return CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY &&
       !/TU-PROYECTO|PEGA_AQUI/i.test(CFG.SUPABASE_URL + CFG.SUPABASE_ANON_KEY) && window.supabase;
   }
 
+  // Cambio entre las tres pantallas generales: configuración pendiente, inicio de sesión y sistema.
   function mostrar(cual) {
     $('#setup').hidden = cual !== 'setup';
     $('#login').hidden = cual !== 'login';
     $('#app').hidden = cual !== 'app';
   }
 
+  // Conecto el formulario de inicio de sesión (correo y contraseña de Supabase Auth) y el botón de salir.
   function iniciarSesionUI() {
     $('#login-form').addEventListener('submit', async function (e) {
       e.preventDefault();
@@ -205,6 +249,7 @@
     });
   }
 
+  // Todo lo que pasa al iniciar sesión: averiguo el tipo de usuario, cargo catálogos y abro la pantalla que toca.
   async function alEntrar(session) {
     state.user = session.user;
     var email = state.user.email || '';
@@ -224,6 +269,7 @@
   }
 
   // Solo los administradores ven "Correos y respaldo" (la base también lo protege)
+  // Pregunto a la base si el usuario es administrador (tabla administradores) o usuario de vista (tabla usuarios_vista). La base también lo valida por su lado.
   async function revisarAdmin() {
     var r = await sb.rpc('es_admin');
     if (!r.error) {
@@ -242,12 +288,14 @@
   }
 
   // ¿Existe el catálogo de procedimientos? (tabla catalogo_procedimientos)
+  // Veo si existe el catálogo de procedimientos; si existe, el CPT llena solo el tipo y la descripción.
   async function revisarCatalogoCPT() {
     var r = await sb.from('catalogo_procedimientos').select('id', { count: 'exact', head: true });
     state.catalogoCPT = !r.error && (r.count || 0) > 0;
   }
 
   // Pestaña "Por proveedor" (todos) y pestañas visibles según el tipo de usuario
+  // Muestro u oculto pestañas según el tipo de usuario (vista solo ve "Por proveedor"; Correos solo el administrador).
   function prepararPestanas() {
     var nav = $('.nav');
     if (!$('.tab[data-view="proveedores"]', nav)) {
@@ -272,6 +320,7 @@
   /* =========================================================================
      3. CATÁLOGOS EN MEMORIA
      ========================================================================= */
+  // Traigo clientes, proveedores, solicitantes, tipos de servicio y años surtidos y los guardo en memoria para las listas.
   async function cargarCatalogos() {
     var res = await Promise.all(CATALOGOS.map(function (c) {
       return sb.from(c.key).select('id,nombre,activo').order('nombre');
@@ -289,8 +338,10 @@
     state.anios.sort(function (a, b) { return b - a; });
     document.dispatchEvent(new CustomEvent('catalogos'));
   }
+  // Regreso el nombre de un catálogo a partir de su id.
   function nombreDe(cat, id) { var x = state.byId[cat][id]; return x ? x.nombre : ''; }
 
+  // Doy de alta un nombre nuevo en un catálogo (o lo reactivo si estaba desactivado).
   async function altaCatalogo(cat, nombre) {
     nombre = limpiar(nombre).toUpperCase();
     if (!nombre) throw new Error('Escribe un nombre.');
@@ -312,7 +363,74 @@
     return r.data;
   }
 
+  // Nombre visible del usuario en sesión (nombre completo si existe en metadata, si no su correo).
+  function nombreUsuarioActual() {
+    if (!state.user) return '';
+    var m = state.user.user_metadata || {};
+    return limpiar(m.full_name || m.name || state.user.email || '').toUpperCase();
+  }
+
+  // Abre una ventana con la información completa de los registros existentes para un NUR.
+  async function verInfoNur(nur) {
+    var dlg = $('#dlg-nur'), sub = $('#dlg-nur-sub'), body = $('#dlg-nur-body');
+    if (!dlg) return;
+    sub.textContent = 'NUR ' + nur;
+    body.innerHTML = '<div class="notice info"><span class="spinner" style="width:14px;height:14px"></span><span>Consultando información en la base…</span></div>';
+    dlg.showModal();
+    var r = await sb.from('v_agregados').select('*').eq('nur', nur).eq('eliminado', false).order('fecha_solicitud', { ascending: false }).order('id', { ascending: false });
+    if (r.error) {
+      body.innerHTML = '<div class="notice bad">' + icon('i-alert') + '<span>No se pudo consultar: ' + esc(mensajeError(r.error)) + '</span></div>';
+      return;
+    }
+    if (!r.data.length) {
+      body.innerHTML = '<div class="notice warn">' + icon('i-info') + '<span>No se encontraron registros activos con el NUR <b>' + esc(nur) + '</b>.</span></div>';
+      return;
+    }
+    sub.textContent = 'NUR ' + nur + ' · ' + r.data.length + (r.data.length === 1 ? ' registro encontrado' : ' registros encontrados');
+    body.innerHTML =
+      (r.data.length > 1 ? '<div class="toolbar" style="margin-bottom:12px"><span class="grow"></span><button type="button" class="btn-primary btn-sm" data-nur-copiar-todo>' + icon('i-copy') + 'Copiar todos para correo</button></div>' : '') +
+      '<ul class="hist">' + r.data.map(function (x, i) {
+      var fila = function (k, v) { return '<tr><td>' + k + '</td><td>' + v + '</td></tr>'; };
+      return '<li>' +
+        '<div class="h-top">' +
+          '<span class="h-op">' + esc(x.cpt + ' · ' + x.descripcion) + '</span>' +
+          '<span class="row">' + badgeEstatus(x.estatus) + ' ' + badgeOps(x.estatus_operaciones, null) +
+            '<button type="button" class="btn-ghost btn-sm" data-nur-copiar="' + i + '">' + icon('i-copy') + 'Copiar para correo</button>' +
+          '</span>' +
+        '</div>' +
+        '<table>' +
+          fila('Año surtido', esc(x.anio_surtido)) +
+          fila('Cliente', esc(x.cliente)) +
+          fila('Proveedor', esc(x.proveedor)) +
+          fila('Contrarrecibo', '<span class="mono">' + esc(x.contrarrecibo || '—') + '</span>') +
+          fila('Tipo de servicio', esc(x.tipo_servicio)) +
+          fila('Solicitante', esc(x.solicitante)) +
+          fila('Fecha solicitud', isoADMY(x.fecha_solicitud)) +
+          fila('Fecha de carga', x.fecha_carga ? isoADMY(x.fecha_carga) : '—') +
+          (x.solicitado_proveedor ? fila('Solicitado al proveedor', 'Sí' + (x.solicitado_en ? ' · ' + fechaHora(x.solicitado_en) : '')) : '') +
+          (x.notas ? fila('Notas', esc(x.notas)) : '') +
+        '</table>' +
+      '</li>';
+    }).join('') + '</ul>';
+    var btnTodo = $('[data-nur-copiar-todo]', body);
+    if (btnTodo) btnTodo.addEventListener('click', function () { copiarParaCorreo(r.data); });
+    $$('[data-nur-copiar]', body).forEach(function (b) {
+      b.addEventListener('click', function () { copiarParaCorreo([r.data[+b.dataset.nurCopiar]]); });
+    });
+  }
+
+  // Obtiene (o da de alta automáticamente en solicitantes) el ID correspondiente al usuario en sesión.
+  async function obtenerSolicitanteUsuarioId() {
+    var nombre = nombreUsuarioActual();
+    if (!nombre) throw new Error('No se pudo identificar al usuario de la sesión.');
+    var item = buscarEnCatalogo('solicitantes', nombre);
+    if (item && item.activo) return item.id;
+    var creado = await altaCatalogo('solicitantes', nombre);
+    return creado.id;
+  }
+
   // Busca nombres parecidos para evitar duplicados (STAR MEDICA vs STAR MÉDICA, etc.)
+  // Distancia de Levenshtein: cuántas letras hay que cambiar para pasar de un texto a otro. La uso para detectar nombres parecidos.
   function lev(a, b) {
     if (a === b) return 0;
     var m = a.length, n = b.length, prev = [], cur, i, j;
@@ -325,9 +443,11 @@
     return prev[n];
   }
   var VACIAS = ['SA', 'DE', 'CV', 'DEL', 'LA', 'EL', 'LOS', 'LAS', 'Y', 'SC', 'SAS', 'RL', 'SAPI'];
+  // Saco las palabras importantes de un nombre (sin SA, DE, CV, etc.).
   function claves(n) {
     return norm(n).split(/[^A-Z0-9]+/).filter(function (w) { return w.length >= 3 && VACIAS.indexOf(w) < 0; });
   }
+  // Busco nombres parecidos en un catálogo para avisar antes de crear un duplicado (STAR MEDICA vs STAR MÉDICA).
   function parecidos(cat, nombre) {
     var c = compact(nombre);
     if (c.length < 3) return [];
@@ -349,7 +469,9 @@
   // Las ventanas flotantes se colocan con position:fixed dentro del <dialog>
   // abierto (o del <body>), para que nunca queden recortadas.
   var popAbierto = null;
+  // Las ventanitas flotantes se pegan al diálogo abierto o al body, para que nunca queden recortadas.
   function capaPara(el) { return el.closest('dialog[open]') || document.body; }
+  // Coloco una ventanita flotante debajo (o arriba si no cabe) del campo que la abrió.
   function colocar(anchor, pop, opts) {
     opts = opts || {};
     var r = anchor.getBoundingClientRect();
@@ -373,6 +495,7 @@
       pop.style.top = (r.bottom + 6) + 'px';
     }
   }
+  // Abro una ventanita flotante y la cierro si el usuario da clic afuera.
   function abrirPop(anchor, pop, opts, alCerrar) {
     cerrarPop();
     capaPara(anchor).appendChild(pop);
@@ -398,8 +521,10 @@
     };
     return popAbierto;
   }
+  // Cierro la ventanita flotante abierta, si hay.
   function cerrarPop() { if (popAbierto) popAbierto.cerrar(); }
 
+  // Resalto en la lista la parte del texto que coincide con lo que se está buscando.
   function resaltar(nombre, q) {
     if (!q) return esc(nombre);
     var n = norm(nombre), nq = norm(q), i = n.indexOf(nq);
@@ -408,6 +533,7 @@
   }
 
   /* ---------- 4.1 Lista seleccionable con búsqueda (cliente, proveedor, solicitante) ---------- */
+  // Lista seleccionable con buscador (cliente, proveedor, solicitante). No permite texto libre; si no existe, deja darlo de alta.
   function Combo(host, opts) {
     var valor = opts.value == null ? null : opts.value;
     var cat = opts.catalog;
@@ -512,6 +638,7 @@
   }
 
   /* ---------- 4.2 Fecha: se escribe (dd/mm/aaaa) o se elige en el calendario ---------- */
+  // Campo de fecha: se puede escribir (dd/mm/aaaa, con máscara) o elegir en el calendario.
   function DateInput(host, opts) {
     opts = opts || {};
     host.innerHTML = '<input class="field" placeholder="dd/mm/aaaa" inputmode="numeric" maxlength="10" autocomplete="off" />' +
@@ -625,6 +752,7 @@
   /* ---------- 4.3 Autocompletado tipo Excel (tipo de servicio) ----------
      Mientras escribes, el resto de la palabra aparece seleccionado dentro del
      mismo campo. Enter o Tab lo aceptan; seguir escribiendo lo reemplaza. */
+  // Autocompletado tipo Excel: mientras se escribe, el resto de la palabra aparece seleccionado y Enter/Tab lo acepta.
   function AutoExcel(input, opts) {
     var items = opts.items; // función → [{id, nombre}]
     var wrap = input.parentNode;
@@ -730,7 +858,9 @@
      dato cae en su celda (el NUR se queda como texto).
      ========================================================================= */
   var COPIA_ENC = ['CONTRARRECIBO', 'NUR', 'CPT', 'DESCRIPCION', 'TIPO DE SERVICIO'];
+  // Los 5 datos que se copian para el correo: contrarrecibo, NUR, CPT, descripción y tipo de servicio.
   function copiaValores(r) { return [r.contrarrecibo || '', r.nur || '', r.cpt || '', r.descripcion || '', r.tipo_servicio || '']; }
+  // Armo la tablita en HTML (para Outlook) y en texto separado por tabuladores (para Excel).
   function tablaCorreo(rows) {
     var th = 'style="border:1px solid #808080;padding:3px 8px;background:#D9E1F2;font-weight:bold;text-align:left;white-space:nowrap"';
     var td = 'style="border:1px solid #808080;padding:3px 8px;mso-number-format:\'\\@\';white-space:nowrap"';
@@ -741,6 +871,7 @@
     var texto = COPIA_ENC.join('\t') + '\n' + rows.map(function (r) { return copiaValores(r).join('\t'); }).join('\n');
     return { html: html, texto: texto };
   }
+  // Copio al portapapeles en los dos formatos; si el navegador no deja, uso el método alterno.
   async function alPortapapeles(html, texto) {
     try {
       if (navigator.clipboard && window.ClipboardItem) {
@@ -763,6 +894,7 @@
     sel.removeAllRanges(); div.remove();
     return ok;
   }
+  // Botón "Copiar para correo": copia la tablita y avisa.
   async function copiarParaCorreo(rows) {
     if (!rows.length) return;
     var t = tablaCorreo(rows);
@@ -811,6 +943,7 @@
   /* =========================================================================
      5. FORMULARIO DE AGREGADO (alta y edición)
      ========================================================================= */
+  // Formulario de agregado. Lo uso igual para "Nuevo agregado" y para "Editar". Valida que nada obligatorio quede en blanco.
   function Formulario(contenedor, cfg) {
     var modo = cfg.modo; // 'nuevo' | 'editar'
     var reg = cfg.registro || null; // fila de v_agregados al editar
@@ -853,18 +986,25 @@
 
     // --- Año surtido
     var selAnio = campo('anio_surtido');
+    // Lleno el desplegable de año surtido desde 2025 hasta el año actual (en nuevo empieza vacío para obligar a elegirlo).
     function pintarAnios() {
-      var v = selAnio.value || (reg ? reg.anio_surtido : anioActual());
+      var v = selAnio.value || (reg ? reg.anio_surtido : '');
       var anios = state.anios.slice();
+      for (var y = 2025; y <= anioActual(); y++) {
+        if (anios.indexOf(y) < 0) anios.push(y);
+      }
       if (reg && anios.indexOf(reg.anio_surtido) < 0) anios.push(reg.anio_surtido);
-      selAnio.innerHTML = anios.sort(function (a, b) { return b - a; }).map(function (a) { return '<option value="' + a + '">' + a + '</option>'; }).join('');
-      selAnio.value = String(v);
+      var opts = (modo === 'nuevo' ? '<option value="">-- Elige año --</option>' : '') +
+        anios.sort(function (a, b) { return b - a; }).map(function (a) { return '<option value="' + a + '">' + a + '</option>'; }).join('');
+      selAnio.innerHTML = opts;
+      selAnio.value = v ? String(v) : '';
     }
     pintarAnios();
 
     // --- Listas seleccionables
     var combos = {};
-    ['cliente_id', 'proveedor_id', 'solicitante_id'].forEach(function (k) {
+    var comboKeys = modo === 'nuevo' ? ['cliente_id', 'proveedor_id'] : ['cliente_id', 'proveedor_id', 'solicitante_id'];
+    comboKeys.forEach(function (k) {
       var host = campo(k);
       combos[k] = Combo(host, {
         catalog: host.dataset.catalog, allowAdd: true, value: reg ? reg[k] : null,
@@ -872,6 +1012,15 @@
       });
       $('.label', wrap(k)).addEventListener('click', function () { combos[k].focus(); });
     });
+    if (modo === 'nuevo') {
+      var wSol = wrap('solicitante_id'), lblSol = $('.label', wSol), hostSol = campo('solicitante_id');
+      wSol.classList.add('campo-auto');
+      if (lblSol) lblSol.insertAdjacentHTML('beforeend', '<span class="auto-tag">Usuario actual</span>');
+      var inpSol = document.createElement('input');
+      inpSol.className = 'field'; inpSol.readOnly = true; inpSol.tabIndex = -1;
+      inpSol.value = nombreUsuarioActual();
+      hostSol.replaceWith(inpSol);
+    }
 
     // --- Tipo de servicio (autocompletado tipo Excel)
     var inTipo = campo('tipo_servicio');
@@ -879,6 +1028,7 @@
     if (reg) inTipo.value = nombreDe('tipos_servicio', tipoId);
     var acHint = $('.ac-hint', wrap('tipo_servicio_id')) || document.createElement('p');
     var acHintTxt = acHint.innerHTML;
+    // Aviso cuando el tipo escrito no existe y ofrezco darlo de alta (modo sin catálogo).
     function tipoDesconocido(txt) {
       if (!txt) { acHint.innerHTML = acHintTxt; return; }
       acHint.innerHTML = '“' + esc(txt.toUpperCase()) + '” no está en el catálogo. <button type="button" class="linkish">Dar de alta</button>';
@@ -906,6 +1056,7 @@
       inContra.value = reg.contrarrecibo || ''; inNur.value = reg.nur || ''; inCpt.value = reg.cpt || '';
       inDesc.value = reg.descripcion || ''; inNotas.value = reg.notas || '';
     }
+    // Dejo escribir solo números (NUR y contrarrecibo).
     function soloDigitos(inp) {
       inp.addEventListener('input', function () {
         var p = inp.selectionStart, v = inp.value, d = v.replace(/\D/g, '');
@@ -915,6 +1066,7 @@
     // En registros migrados con NUR dañado, no forzamos dígitos hasta que lo cambien
     soloDigitos(inContra);
     if (!(reg && /[^\d]/.test(reg.nur || ''))) soloDigitos(inNur);
+    // Paso a mayúsculas mientras se escribe (CPT y descripción).
     function mayus(inp) {
       inp.addEventListener('input', function () {
         var p = inp.selectionStart, e2 = inp.selectionEnd, u = inp.value.toUpperCase();
@@ -946,6 +1098,7 @@
     var selEst = campo('estatus');
     var estatusPrevio = reg && reg.estatus !== ESTATUS.CARG ? reg.estatus : ESTATUS.PEND;
     selEst.value = reg ? reg.estatus : ESTATUS.PEND;
+    // Si hay fecha de carga, el estatus queda CARGADO y bloqueado (igual que el trigger de la base).
     function sincronizarEstatus() {
       var fc = fCar.get();
       if (fc && fc !== 'invalid') {
@@ -965,6 +1118,7 @@
 
     // --- Estado en vivo
     var vivo = $('[data-live]', form);
+    // Muestro en vivo cómo quedará el registro (estatus y días).
     function actualizarVivo() {
       var fs = fSol.get(), fc = fCar.get();
       var e = estatusOps(fs && fs !== 'invalid' ? fs : null, selEst.value, fc && fc !== 'invalid' ? fc : null);
@@ -996,7 +1150,10 @@
       if (!otros.length) return;
       nurAviso = otros;
       nota('nur', 'warn', 'Este NUR ya está registrado ' + otros.length + (otros.length === 1 ? ' vez' : ' veces') + ': ' +
-        otros.slice(0, 2).map(function (x) { return esc(x.cpt + ' · ' + x.descripcion + ' (' + isoADMY(x.fecha_solicitud) + ')'); }).join('; ') + '.');
+        otros.slice(0, 2).map(function (x) { return esc(x.cpt + ' · ' + x.descripcion + ' (' + isoADMY(x.fecha_solicitud) + ')'); }).join('; ') +
+        '. <button type="button" class="linkish" data-ver-nur>Ver información</button>');
+      var btnVer = $('[data-ver-nur]', wrap('nur'));
+      if (btnVer) btnVer.addEventListener('click', function () { verInfoNur(v); });
     }, 350);
     inNur.addEventListener('input', revisarNur);
 
@@ -1024,8 +1181,11 @@
       resuelto: reg ? limpiar(reg.cpt).toUpperCase() : '', // CPT con el que están llenos tipo/descripción
       error: null, pedido: 0, promesa: null, opciones: null
     };
+    // Escapo % y _ para buscar el CPT exacto en el catálogo.
     function escLike(v) { return v.replace(/[\\%_]/g, function (c) { return '\\' + c; }); }
+    // Limpio tipo y descripción automáticos.
     function vaciarAuto() { tipoId = null; inTipo.value = ''; inDesc.value = ''; }
+    // Lleno tipo y descripción con lo que regresó el catálogo (y doy de alta el tipo si no existía).
     async function aplicarFila(f, origen) {
       inDesc.value = limpiar(f.descripcion).toUpperCase();
       var nombreTipo = limpiar(f.tipo_servicio).toUpperCase();
@@ -1038,6 +1198,7 @@
       quitarNota('cpt');
       if (origen === 'historial') nota('cpt', 'warn', 'No está en el catálogo; se usaron los datos de un registro anterior con este CPT.');
     }
+    // Busco el CPT en catalogo_procedimientos (solo Habilitados). Si no está, uso un registro anterior; si no existe, marco error.
     async function resolverCpt() {
       var v = limpiar(inCpt.value).toUpperCase();
       if (v === cpt.resuelto && !cpt.error && !cpt.opciones) return;
@@ -1095,6 +1256,7 @@
       tocado.cpt = true;
       validar();
     }
+    // Lanzo la búsqueda del CPT y guardo la promesa para esperarla al guardar.
     function lanzarCpt() { cpt.promesa = resolverCpt(); return cpt.promesa; }
     if (modoCat) {
       var cptDebounce = debounce(lanzarCpt, 400);
@@ -1106,6 +1268,7 @@
       inCpt.addEventListener('keydown', function (e) { if (e.key === 'Enter') lanzarCpt(); });
     }
 
+    // Pongo una nota pequeña debajo de un campo.
     function nota(campoN, tipo, html) {
       var w = wrap(campoN); quitarNota(campoN);
       var p = document.createElement('p');
@@ -1114,19 +1277,21 @@
       p.innerHTML = html;
       w.appendChild(p);
     }
+    // Quito la nota de un campo (y la caja de opciones del CPT si la hay).
     function quitarNota(campoN) {
       var n = $('[data-nota]', wrap(campoN)); if (n) n.remove();
       if (campoN === 'cpt') { var o = $('[data-opciones-cpt]', form); if (o) o.remove(); }
     }
 
     // --- Validación: ningún dato obligatorio en blanco
+    // Reviso todos los campos y regreso los errores (nada obligatorio en blanco, fechas válidas, etc.).
     function errores() {
       var e = {};
       var hoy = hoyISO();
       if (!selAnio.value) e.anio_surtido = 'Elige el año.';
       if (!combos.cliente_id.get()) e.cliente_id = 'Elige el cliente.';
       if (!combos.proveedor_id.get()) e.proveedor_id = 'Elige el proveedor.';
-      if (!combos.solicitante_id.get()) e.solicitante_id = 'Elige quién lo solicita.';
+      if (combos.solicitante_id && !combos.solicitante_id.get()) e.solicitante_id = 'Elige quién lo solicita.';
       if (!tipoId) e.tipo_servicio_id = modoCat ? 'Se llena al capturar un CPT válido.' : (limpiar(inTipo.value) ? 'Elige un tipo de la lista (o dalo de alta).' : 'Escribe el tipo de servicio.');
       var contra = limpiar(inContra.value);
       var contraOpcional = reg && reg.origen === 'EXCEL_2026' && !original.contrarrecibo;
@@ -1148,6 +1313,7 @@
       else if (fc && fs && fs !== 'invalid' && fc < fs) e.fecha_carga = 'No puede ser anterior a la fecha de solicitud.';
       return e;
     }
+    // Pinto en rojo los campos con error y actualizo el aviso de "Faltan N datos".
     function validar(forzar) {
       var e = errores();
       $$('[data-wrap]', form).forEach(function (w) {
@@ -1200,11 +1366,19 @@
         return;
       }
       var fc = fCar.get();
+      var solId;
+      try {
+        solId = modo === 'nuevo' ? await obtenerSolicitanteUsuarioId() : combos.solicitante_id.get();
+      } catch (errSol) {
+        errBox.hidden = false;
+        errBox.innerHTML = '<div class="notice bad">' + icon('i-alert') + '<span><b>No se pudo asignar el solicitante.</b> ' + esc(mensajeError(errSol)) + '</span></div>';
+        return;
+      }
       var datos = {
         anio_surtido: +selAnio.value,
         cliente_id: combos.cliente_id.get(),
         proveedor_id: combos.proveedor_id.get(),
-        solicitante_id: combos.solicitante_id.get(),
+        solicitante_id: solId,
         tipo_servicio_id: tipoId,
         contrarrecibo: limpiar(inContra.value) || null,
         nur: limpiar(inNur.value),
@@ -1252,6 +1426,7 @@
       }
     });
 
+    // Después de guardar limpio solo lo del estudio, para capturar el siguiente rápido.
     function limpiarParaSiguiente() {
       // Se conservan cliente, proveedor, solicitante, tipo, contrarrecibo, año y fecha de solicitud
       inNur.value = ''; inCpt.value = ''; inDesc.value = ''; inNotas.value = '';
@@ -1312,6 +1487,7 @@
   var filtros = {};
   var pedido = 0;
 
+  // Armo la pantalla de Consulta: encabezados ordenables, filtros, paginación, exportar y acciones por renglón.
   function iniciarConsulta() {
     Q.anio = anioActual();
     // Encabezados ordenables
@@ -1360,17 +1536,21 @@
     $('#grid-body').addEventListener('click', accionFila);
   }
 
+  // Lleno el filtro de año surtido con los años que existen en la base.
   function pintarFiltroAnios() {
     var sel = $('#f-anio'); if (!sel) return;
     sel.innerHTML = '<option value="">Todos los años</option>' + state.anios.map(function (a) { return '<option value="' + a + '">' + a + '</option>'; }).join('');
     sel.value = Q.anio == null ? '' : String(Q.anio);
   }
+  // Marco el indicador (semáforo) que está filtrando la tabla.
   function pintarKpiActivo() {
     $$('.kpi').forEach(function (b) { b.setAttribute('aria-pressed', String((b.dataset.kpi === 'todos' ? '' : b.dataset.kpi) === Q.ops && !!Q.ops)); });
   }
+  // ¿Hay algún filtro activo? Sirve para mostrar el botón "Limpiar filtros".
   function hayFiltros() {
     return !!(Q.q || Q.cliente_id || Q.proveedor_id || Q.tipo_servicio_id || Q.solicitante_id || Q.estatus || Q.ops || Q.desde || Q.hasta || Q.revision || Q.bajas);
   }
+  // Quito todos los filtros de la Consulta.
   function limpiarFiltros() {
     Q.q = ''; Q.cliente_id = Q.proveedor_id = Q.tipo_servicio_id = Q.solicitante_id = null;
     Q.estatus = Q.ops = ''; Q.desde = Q.hasta = null; Q.revision = Q.bajas = false; Q.pagina = 0;
@@ -1381,6 +1561,7 @@
     pintarKpiActivo(); cargarTabla();
   }
 
+  // Traduzco los filtros de pantalla a la consulta de Supabase (año, cliente, fechas, búsqueda libre, etc.).
   function aplicarFiltros(q, opts) {
     opts = opts || {};
     if (!Q.bajas) q = q.eq('eliminado', false);
@@ -1399,6 +1580,7 @@
     return q;
   }
 
+  // Traigo una página de registros de la vista v_agregados con los filtros y el orden elegidos.
   async function cargarTabla() {
     var mio = ++pedido;
     var body = $('#grid-body');
@@ -1435,6 +1617,7 @@
 
   // Selección para copiar varios a la vez (se conserva al cambiar de página o de búsqueda)
   var seleccion = new Map();
+  // Barra "N seleccionados · Copiar para correo" cuando hay casillas marcadas.
   function pintarSeleccion() {
     var bar = $('#sel-bar');
     if (!bar) {
@@ -1469,6 +1652,7 @@
     }
   });
 
+  // Dibujo los renglones de la tabla de Consulta con sus botones de acción.
   function pintarFilas() {
     var body = $('#grid-body');
     if (!filas.length) {
@@ -1509,6 +1693,7 @@
     }).join('');
   }
 
+  // Cuento registros del año: total, completados, en tiempo y que requieren actualización (semáforo de arriba).
   async function cargarKpis() {
     function cuenta(ops) {
       var q = sb.from('v_agregados').select('id', { count: 'exact', head: true }).eq('eliminado', false);
@@ -1530,6 +1715,7 @@
     $$('.kpi-label', $('.kpis'))[0].textContent = Q.anio ? 'Registros ' + Q.anio : 'Registros (todos los años)';
   }
 
+  // Número rojo junto a "Consulta": solicitudes con más de 4 días sin cargar.
   async function actualizarContadorNav() {
     var r = await sb.from('v_pendientes_vencidos').select('id', { count: 'exact', head: true });
     if (r.error) return;
@@ -1539,9 +1725,11 @@
     var ac = $('#alert-count'); if (ac) ac.textContent = n.toLocaleString('es-MX');
   }
 
+  // Vuelvo a cargar indicadores, tabla y contador.
   function recargar() { cargarKpis(); cargarTabla(); actualizarContadorNav(); }
 
   // Trae todos los registros que cumplen los filtros, de 1000 en 1000
+  // Supabase entrega máximo 1000 registros por consulta; aquí los traigo todos de 1000 en 1000.
   async function traerTodo(construir) {
     var todo = [], desde = 0, lote = 1000;
     for (;;) {
@@ -1554,6 +1742,7 @@
     return todo;
   }
 
+  // Exporto a Excel exactamente lo que está filtrado en Consulta.
   async function exportarConsulta() {
     var btn = $('#btn-export');
     cargando(btn, true, 'Exportando…');
@@ -1577,6 +1766,7 @@
   var actual = null; // fila sobre la que se actúa
   var fCarga = null;
 
+  // Cierro cualquier ventana abierta (por ejemplo al cerrar sesión).
   function cerrarDialogos() { $$('dialog[open]').forEach(function (d) { d.close(); }); }
   $$('dialog').forEach(function (d) {
     d.addEventListener('click', function (e) { if (e.target.closest('[data-close]')) d.close(); });
@@ -1584,8 +1774,10 @@
     d.addEventListener('close', cerrarPop);
   });
 
+  // Texto corto de un registro (NUR · CPT · proveedor) para títulos de ventanas.
   function resumenFila(r) { return 'NUR ' + r.nur + ' · ' + r.cpt + ' · ' + r.proveedor; }
 
+  // Qué hacer al dar clic en los íconos de cada renglón: cargar, copiar, editar, historial, baja o reactivar.
   async function accionFila(e) {
     var b = e.target.closest('button[data-a]'); if (!b) return;
     var r = filas[+b.closest('tr').dataset.i]; if (!r) return;
@@ -1599,6 +1791,7 @@
     else if (a === 'copiar') copiarParaCorreo([r]);
   }
 
+  // Abro la ventana de edición con la versión más reciente del registro.
   async function abrirEdicion(r) {
     // Se lee de nuevo para editar la versión más reciente
     var f = await sb.from('v_agregados').select('*').eq('id', r.id).single();
@@ -1614,6 +1807,7 @@
     var primero = $('#form-edit .combo-btn'); if (primero) primero.focus();
   }
 
+  // Ventana rápida para capturar la fecha de carga (pasa a CARGADO / COMPLETADO).
   function abrirCarga(r) {
     var dlg = $('#dlg-carga');
     $('#dlg-carga-sub').textContent = resumenFila(r) + ' · solicitado el ' + isoADMY(r.fecha_solicitud);
@@ -1637,6 +1831,7 @@
   });
   $('#dlg-carga').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !popAbierto) { e.preventDefault(); $('#carga-save').click(); } });
 
+  // Ventana para dar de baja: pide motivo obligatorio. Nunca se borra el registro.
   function abrirBaja(r) {
     $('#dlg-baja-sub').textContent = resumenFila(r);
     $('#baja-motivo').value = '';
@@ -1656,6 +1851,7 @@
     cargarTabla(); cargarKpis(); actualizarContadorNav();
   });
 
+  // Regreso un registro dado de baja a activo.
   async function reactivar(r) {
     var ok = await confirmar('¿Reactivar este registro?', '<p class="card-hint">' + esc(resumenFila(r)) + '</p><p class="card-hint mt-8">Motivo de la baja: ' + esc(r.motivo_baja || '—') + '</p>', 'Reactivar');
     if (!ok) return;
@@ -1671,6 +1867,7 @@
     fecha_carga: 'Fecha de carga', estatus: 'Estatus', notas: 'Notas', requiere_revision: 'Requiere revisión', eliminado: 'Dado de baja', motivo_baja: 'Motivo de baja', solicitado_proveedor: 'Solicitado al proveedor'
   };
   var CAT_DE = { cliente_id: 'clientes', proveedor_id: 'proveedores', tipo_servicio_id: 'tipos_servicio', solicitante_id: 'solicitantes' };
+  // Muestro un valor del historial de forma legible (nombres en lugar de ids, fechas en dd/mm/aaaa).
   function valorHist(k, v) {
     if (v == null || v === '') return '—';
     if (CAT_DE[k]) return nombreDe(CAT_DE[k], v) || ('#' + v);
@@ -1678,6 +1875,7 @@
     if (typeof v === 'boolean') return v ? 'Sí' : 'No';
     return String(v);
   }
+  // Muestro quién cambió qué y cuándo (tabla agregados_historial, la llena un trigger en la base).
   async function abrirHistorial(r) {
     var dlg = $('#dlg-hist'), ul = $('#hist-list');
     $('#dlg-hist-sub').textContent = resumenFila(r);
@@ -1709,6 +1907,7 @@
      8. CATÁLOGOS (pantalla)
      ========================================================================= */
   var catSel = 'clientes';
+  // Pantalla de Catálogos: alta, cambio de nombre y activar/desactivar (no se borra nada).
   function iniciarCatalogos() {
     pintarLadoCat();
     document.addEventListener('catalogos', function () { pintarLadoCat(); pintarCat(); });
@@ -1768,12 +1967,14 @@
     });
     pintarCat();
   }
+  // Menú lateral de Catálogos con el conteo de activos.
   function pintarLadoCat() {
     $('#cat-side').innerHTML = CATALOGOS.map(function (c) {
       var n = state.cat[c.key].filter(function (x) { return x.activo; }).length;
       return '<button type="button" role="tab" data-cat="' + c.key + '" aria-current="' + (c.key === catSel) + '"><span>' + c.titulo + '</span><span class="n">' + n + '</span></button>';
     }).join('');
   }
+  // Lista del catálogo elegido.
   function pintarCat() {
     var c = CATALOGOS.filter(function (x) { return x.key === catSel; })[0];
     $('#cat-title').textContent = c.titulo;
@@ -1793,6 +1994,7 @@
      ========================================================================= */
   var destinatarios = [], columnasExtra = true;
   var EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  // Pantalla Correos y respaldo (solo administrador): destinatarios y respaldo manual.
   function iniciarCorreos() {
     $('#mail-add').addEventListener('submit', async function (e) {
       e.preventDefault();
@@ -1835,6 +2037,7 @@
       }, 0);
     });
   }
+  // Traigo los destinatarios con sus interruptores de Alerta y Respaldo.
   async function cargarDestinatarios() {
     var r = await sb.from('destinatarios_alerta').select('*').order('id');
     var box = $('#mail-rows');
@@ -1854,6 +2057,7 @@
     }).join('') : '<div class="empty"><strong>Sin destinatarios</strong>Agrega al menos un correo para recibir la alerta y el respaldo.</div>');
   }
 
+  // Genero en el navegador el mismo Excel del respaldo de los viernes.
   async function descargarRespaldo() {
     var btn = $('#btn-backup');
     cargando(btn, true, 'Generando respaldo…');
@@ -1877,6 +2081,7 @@
      ========================================================================= */
   var PV = { lista: [], provId: null, filas: [], sel: new Set(), filtro: 'todos', pedido: 0 };
 
+  // Pantalla "Por proveedor": pendientes por proveedor, Excel concentrado y marca de solicitado.
   function iniciarProveedores() {
     var sec = $('#view-proveedores');
     sec.innerHTML =
@@ -1906,6 +2111,7 @@
     pintarProveedorVacio();
   }
 
+  // Traigo el conteo de pendientes por proveedor (vista v_pendientes_por_proveedor).
   async function cargarListaProveedores() {
     var r = await sb.from('v_pendientes_por_proveedor').select('*').order('pendientes', { ascending: false }).order('proveedor');
     if (r.error) {
@@ -1917,6 +2123,7 @@
     if (PV.provId) cargarProveedor();
   }
 
+  // Dibujo la lista de proveedores con pendientes, vencidos y solicitados.
   function pintarListaProveedores() {
     var q = norm(($('#pv-q') || {}).value || '');
     var lista = PV.lista.filter(function (p) { return !q || norm(p.proveedor).indexOf(q) >= 0; });
@@ -1932,10 +2139,12 @@
       }).join('') : '<li class="muted" style="padding:14px 20px">Sin proveedores con pendientes.</li>');
   }
 
+  // Mensaje inicial cuando todavía no se elige proveedor.
   function pintarProveedorVacio() {
     $('#pv-main').innerHTML = '<div class="empty" style="padding:80px 20px"><strong>Elige un proveedor</strong>Verás sus agregados pendientes, podrás descargar el concentrado en Excel y marcarlos como solicitados.</div>';
   }
 
+  // Traigo todos los pendientes del proveedor elegido.
   async function cargarProveedor() {
     var mio = ++PV.pedido;
     var r;
@@ -1952,12 +2161,14 @@
     pintarProveedor();
   }
 
+  // Aplico el filtro Todos / Sin solicitar / Solicitados.
   function visiblesPV() {
     return PV.filas.filter(function (r) {
       return PV.filtro === 'todos' || (PV.filtro === 'sin' ? !r.solicitado_proveedor : r.solicitado_proveedor);
     });
   }
 
+  // Dibujo el detalle del proveedor con su tabla y botones.
   function pintarProveedor() {
     if (!PV.provId) return pintarProveedorVacio();
     var prov = nombreDe('proveedores', PV.provId) || ((PV.lista.filter(function (p) { return p.proveedor_id === PV.provId; })[0] || {}).proveedor) || '';
@@ -2004,6 +2215,7 @@
     var wrapNuevo = $('#pv-main .table-wrap'); if (wrapNuevo) wrapNuevo.scrollTop = scrollPrev;
   }
 
+  // Marco o quito "Solicitado al proveedor" con la función de la base marcar_solicitado (lo único que puede cambiar un usuario de vista).
   async function marcarSolicitado(ids, valor) {
     var r = await sb.rpc('marcar_solicitado', { p_ids: ids, p_valor: valor });
     if (r.error) { toast('bad', 'No se pudo actualizar', mensajeError(r.error)); return false; }
@@ -2014,6 +2226,7 @@
     return true;
   }
 
+  // Botones de la pantalla Por proveedor: Excel, marcar, quitar marca, copiar.
   async function accionProveedor(e) {
     var f = e.target.closest('[data-filtro]');
     if (f) { PV.filtro = f.dataset.filtro; pintarProveedor(); return; }
@@ -2064,8 +2277,711 @@
     document.head.appendChild(st);
   })();
 
+  /* ---------- Carga masiva desde Excel ---------- */
+  var MASIVO_MAP = {
+    'ANO SURTIDO': 'anio_surtido', 'ANIO SURTIDO': 'anio_surtido', 'ANO': 'anio_surtido',
+    'CLIENTE': 'cliente',
+    'PROVEEDOR': 'proveedor',
+    'CONTRARRECIBO': 'contrarrecibo',
+    'NUR': 'nur',
+    'CPT': 'cpt',
+    'DESCRIPCION': 'descripcion',
+    'TIPO DE SERVICIO': 'tipo_servicio', 'TIPO SERVICIO': 'tipo_servicio', 'TIPO': 'tipo_servicio',
+    'SOLICITANTE': 'solicitante',
+    'FECHA SOLICITUD': 'fecha_solicitud', 'FECHA DE SOLICITUD': 'fecha_solicitud',
+    'FECHA DE CARGA': 'fecha_carga', 'FECHA CARGA': 'fecha_carga',
+    'ESTATUS': 'estatus',
+    'NOTAS': 'notas'
+  };
+
+  function descargarPlantillaMasiva() {
+    if (!window.XLSX) { toast('bad', 'No se cargó la librería de Excel'); return; }
+    var enc = ['CLIENTE', 'PROVEEDOR', 'CONTRARRECIBO', 'NUR', 'CPT', 'DESCRIPCION', 'TIPO DE SERVICIO', 'FECHA SOLICITUD', 'FECHA DE CARGA', 'ESTATUS', 'NOTAS', 'AÑO SURTIDO'];
+    var ejemplo = [
+      { t: 's', v: (state.cat.clientes[0] && state.cat.clientes[0].nombre) || 'EJEMPLO CLIENTE' },
+      { t: 's', v: (state.cat.proveedores[0] && state.cat.proveedores[0].nombre) || 'EJEMPLO PROVEEDOR' },
+      { t: 's', v: '12345' },
+      { t: 's', v: '987654321' },
+      { t: 's', v: '70450' },
+      { t: 's', v: state.catalogoCPT ? '' : 'TOMOGRAFIA DE CRANEO' },
+      { t: 's', v: state.catalogoCPT ? '' : ((state.cat.tipos_servicio[0] && state.cat.tipos_servicio[0].nombre) || 'IMAGENOLOGIA') },
+      { t: 's', v: isoADMY(hoyISO()) },
+      { t: 's', v: '' },
+      { t: 's', v: 'PENDIENTE' },
+      { t: 's', v: '' },
+      { t: 'n', v: anioActual() }
+    ];
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet([enc]);
+    ejemplo.forEach(function (c, i) { ws[XLSX.utils.encode_cell({ r: 1, c: i })] = c; });
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 1, c: enc.length - 1 } });
+    ws['!cols'] = [22, 32, 16, 16, 14, 42, 22, 16, 16, 18, 28, 13].map(function (w) { return { wch: w }; });
+    XLSX.utils.book_append_sheet(wb, ws, 'PLANTILLA');
+
+    var inst = [
+      ['INSTRUCCIONES PARA CARGA MASIVA'],
+      ['1. Obligatorios: AÑO SURTIDO, CLIENTE, PROVEEDOR, CONTRARRECIBO (solo números), NUR (solo números) y CPT.'],
+      [state.catalogoCPT
+        ? '2. El catálogo de CPT está activo: DESCRIPCION y TIPO DE SERVICIO se llenan automáticamente si dejas esas columnas vacías.'
+        : '2. DESCRIPCION y TIPO DE SERVICIO son obligatorios.'],
+      ['3. El SOLICITANTE se toma automáticamente del usuario con el que iniciaste sesión.'],
+      ['4. Opcionales: FECHA SOLICITUD (si va vacía toma la fecha actual), FECHA DE CARGA (dd/mm/aaaa), ESTATUS (PENDIENTE o ACLARACIÓN SERVICIO NO BRINDADO) y NOTAS.'],
+      ['5. Si capturas FECHA DE CARGA, el estatus pasa automáticamente a CARGADO.'],
+      ['6. Borra o reemplaza la fila 2 de ejemplo antes de subir tu archivo.']
+    ];
+    var wsInst = XLSX.utils.aoa_to_sheet(inst);
+    wsInst['!cols'] = [{ wch: 110 }];
+    XLSX.utils.book_append_sheet(wb, wsInst, 'INSTRUCCIONES');
+    XLSX.writeFile(wb, 'plantilla_carga_masiva_agregados.xlsx');
+  }
+
+  function celdaTextoExcel(cell) {
+    if (!cell || cell.v == null) return '';
+    if (cell.t === 'n') return Number.isInteger(cell.v) ? String(cell.v) : limpiar(cell.w || String(cell.v));
+    return limpiar(cell.v);
+  }
+
+  function celdaFechaExcel(cell) {
+    if (!cell || cell.v == null || cell.v === '') return null;
+    if (cell.t === 'n') {
+      var dt = new Date(Date.UTC(1899, 11, 30) + Math.round(cell.v) * 86400000);
+      var y = dt.getUTCFullYear(), m = dt.getUTCMonth() + 1, d = dt.getUTCDate();
+      if (y < 2000 || y > 2100 || !isoValida(y, m, d)) return 'invalid';
+      return aISO(y, m, d);
+    }
+    var s = limpiar(cell.w || cell.v);
+    if (!s) return null;
+    var iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+      var yy = +iso[1], mm = +iso[2], dd = +iso[3];
+      return (yy >= 2000 && yy <= 2100 && isoValida(yy, mm, dd)) ? aISO(yy, mm, dd) : 'invalid';
+    }
+    return dmyAISO(s);
+  }
+
+  function buscarEnCatalogo(cat, nombre) {
+    var n = norm(nombre);
+    if (!n) return null;
+    return state.cat[cat].filter(function (x) { return norm(x.nombre) === n; })[0] || null;
+  }
+
+  function similaresCatalogo(cat, nombre) {
+    var c = compact(nombre);
+    if (c.length < 2) return [];
+    var k = claves(nombre);
+    var vistos = {};
+    var res = [];
+    function palabraParecida(w1, w2) {
+      if (w1 === w2) return true;
+      if (w1.length >= 4 && w2.length >= 4) {
+        if (w1.indexOf(w2) >= 0 || w2.indexOf(w1) >= 0) return true;
+        if (lev(w1, w2) <= (Math.min(w1.length, w2.length) >= 6 ? 2 : 1)) return true;
+      }
+      return false;
+    }
+    function agregar(lista) {
+      lista.forEach(function (x) {
+        if (!x.activo || vistos[x.id]) return;
+        vistos[x.id] = true;
+        res.push(x);
+      });
+    }
+    agregar(parecidos(cat, nombre));
+    agregar(state.cat[cat].filter(function (x) {
+      if (!x.activo) return false;
+      var o = compact(x.nombre);
+      if (c.length >= 3 && (o.indexOf(c) >= 0 || c.indexOf(o) >= 0)) return true;
+      var kx = claves(x.nombre);
+      return k.some(function (w1) { return kx.some(function (w2) { return palabraParecida(w1, w2); }); });
+    }));
+    return res;
+  }
+
+  function iniciarMasivo() {
+    var wrap = $('#masivo-wrap');
+    if (!wrap) return;
+    wrap.innerHTML =
+      '<div class="toolbar" style="margin-bottom:14px">' +
+        '<button type="button" class="btn-ghost btn-sm" id="masivo-tpl">' + icon('i-download') + 'Descargar plantilla Excel</button>' +
+        '<span class="card-hint">También puedes subir un Excel exportado con las columnas estándar (CLIENTE, PROVEEDOR, CONTRARRECIBO, NUR, CPT, SOLICITANTE, FECHA SOLICITUD…).</span>' +
+      '</div>' +
+      '<div class="dropzone" id="masivo-drop" tabindex="0" role="button" aria-label="Seleccionar archivo Excel">' +
+        icon('i-upload') +
+        '<b>Haz clic o arrastra aquí tu archivo Excel (.xlsx, .xls, .csv)</b>' +
+        '<span>Se validarán todas las filas antes de guardar en la base de datos.</span>' +
+        '<input type="file" id="masivo-file" accept=".xlsx,.xls,.csv" hidden />' +
+      '</div>' +
+      '<div id="masivo-preview" class="mt-16" hidden></div>';
+
+    var st = {
+      nombreArchivo: '', crudas: [], evaluadas: [], cptMap: {}, nurExistentes: {},
+      mapeoCat: { clientes: {}, proveedores: {}, solicitantes: {}, tipos_servicio: {} },
+      cptEleccion: {}, omitidas: {}, filtroPrev: 'todas',
+      importando: false
+    };
+    var inp = $('#masivo-file', wrap), drop = $('#masivo-drop', wrap), prev = $('#masivo-preview', wrap);
+
+    $('#masivo-tpl', wrap).addEventListener('click', descargarPlantillaMasiva);
+    drop.addEventListener('click', function () { if (!st.importando) inp.click(); });
+    drop.addEventListener('keydown', function (e) { if ((e.key === 'Enter' || e.key === ' ') && !st.importando) { e.preventDefault(); inp.click(); } });
+    drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('is-drag'); });
+    drop.addEventListener('dragleave', function () { drop.classList.remove('is-drag'); });
+    drop.addEventListener('drop', function (e) {
+      e.preventDefault(); drop.classList.remove('is-drag');
+      if (!st.importando && e.dataTransfer.files && e.dataTransfer.files[0]) leerArchivo(e.dataTransfer.files[0]);
+    });
+    inp.addEventListener('change', function () {
+      if (inp.files && inp.files[0]) leerArchivo(inp.files[0]);
+      inp.value = '';
+    });
+
+    async function leerArchivo(file) {
+      if (!window.XLSX) { toast('bad', 'No se cargó la librería de Excel'); return; }
+      st.nombreArchivo = file.name;
+      prev.hidden = false;
+      prev.innerHTML = '<div class="notice info"><span class="spinner" style="width:14px;height:14px"></span><span>Leyendo y validando <b>' + esc(file.name) + '</b>…</span></div>';
+      try {
+        var buf = await file.arrayBuffer();
+        var wb = XLSX.read(buf, { type: 'array', cellDates: false });
+        var hojaNombre = wb.SheetNames.filter(function (n) { return norm(n) === 'PLANTILLA' || /^AGREGADOS/.test(norm(n)); })[0] || wb.SheetNames[0];
+        var ws = wb.Sheets[hojaNombre];
+        if (!ws || !ws['!ref']) throw new Error('La hoja está vacía.');
+        var rng = XLSX.utils.decode_range(ws['!ref']);
+        var cols = {};
+        for (var c = rng.s.c; c <= rng.e.c; c++) {
+          var hCell = ws[XLSX.utils.encode_cell({ r: rng.s.r, c: c })];
+          var hKey = MASIVO_MAP[norm(celdaTextoExcel(hCell))];
+          if (hKey && cols[hKey] == null) cols[hKey] = c;
+        }
+        var reqCols = ['anio_surtido', 'cliente', 'proveedor', 'contrarrecibo', 'nur', 'cpt'];
+        var faltanCols = reqCols.filter(function (k) { return cols[k] == null; });
+        if (faltanCols.length) {
+          throw new Error('Faltan columnas obligatorias en la fila 1: ' + faltanCols.join(', ').toUpperCase() + '. Descarga la plantilla para ver el formato exacto.');
+        }
+
+        var filas = [];
+        for (var r = rng.s.r + 1; r <= rng.e.r; r++) {
+          var celda = function (k) { return cols[k] == null ? null : ws[XLSX.utils.encode_cell({ r: r, c: cols[k] })]; };
+          var raw = {
+            filaExcel: r + 1,
+            anio: celdaTextoExcel(celda('anio_surtido')),
+            cliente: celdaTextoExcel(celda('cliente')).toUpperCase(),
+            proveedor: celdaTextoExcel(celda('proveedor')).toUpperCase(),
+            contrarrecibo: celdaTextoExcel(celda('contrarrecibo')),
+            nur: celdaTextoExcel(celda('nur')),
+            cpt: celdaTextoExcel(celda('cpt')).toUpperCase(),
+            descripcion: celdaTextoExcel(celda('descripcion')).toUpperCase(),
+            tipo_servicio: celdaTextoExcel(celda('tipo_servicio')).toUpperCase(),
+            fecha_solicitud: celdaFechaExcel(celda('fecha_solicitud')),
+            fecha_carga: celdaFechaExcel(celda('fecha_carga')),
+            estatus: norm(celdaTextoExcel(celda('estatus'))),
+            notas: celdaTextoExcel(celda('notas'))
+          };
+          var vacia = !raw.anio && !raw.cliente && !raw.proveedor && !raw.contrarrecibo && !raw.nur && !raw.cpt && !raw.fecha_solicitud;
+          if (!vacia) filas.push(raw);
+        }
+        if (!filas.length) throw new Error('No se encontraron filas con datos debajo de los encabezados.');
+
+        st.crudas = filas;
+        st.mapeoCat = { clientes: {}, proveedores: {}, solicitantes: {}, tipos_servicio: {} };
+        st.cptEleccion = {};
+        st.omitidas = {};
+        st.filtroPrev = 'todas';
+        await consultarReferencias(filas);
+        evaluarYMostrar();
+      } catch (e) {
+        prev.innerHTML = '<div class="notice bad">' + icon('i-alert') + '<span><b>No se pudo leer el archivo.</b> ' + esc(e.message || e) + '</span></div>';
+      }
+    }
+
+    async function consultarReferencias(filas) {
+      st.cptMap = {};
+      st.nurExistentes = {};
+      var i, chunk;
+
+      if (state.catalogoCPT) {
+        var cpts = Array.from(new Set(filas.map(function (f) { return f.cpt; }).filter(Boolean)));
+        var sinCat = [];
+        for (i = 0; i < cpts.length; i += 100) {
+          chunk = cpts.slice(i, i + 100);
+          var rc = await sb.from('catalogo_procedimientos').select('cpt,descripcion,tipo_servicio,status').in('cpt', chunk);
+          if (rc.error) throw rc.error;
+          rc.data.forEach(function (x) {
+            var k = limpiar(x.cpt).toUpperCase();
+            if (!st.cptMap[k]) st.cptMap[k] = { hab: [], total: 0 };
+            st.cptMap[k].total++;
+            if (x.status === 'Habilitado') {
+              var ya = st.cptMap[k].hab.some(function (y) { return norm(y.descripcion) === norm(x.descripcion) && norm(y.tipo_servicio) === norm(x.tipo_servicio); });
+              if (!ya) st.cptMap[k].hab.push(x);
+            }
+          });
+        }
+        sinCat = cpts.filter(function (c) { return !st.cptMap[c] || !st.cptMap[c].total; });
+        for (i = 0; i < sinCat.length; i += 100) {
+          chunk = sinCat.slice(i, i + 100);
+          var rh = await sb.from('agregados').select('cpt,descripcion,tipo_servicio_id').in('cpt', chunk).order('created_at', { ascending: false });
+          if (!rh.error && rh.data) {
+            rh.data.forEach(function (x) {
+              var k = limpiar(x.cpt).toUpperCase();
+              if (!st.cptMap[k]) st.cptMap[k] = { hab: [{ descripcion: x.descripcion, tipo_servicio: nombreDe('tipos_servicio', x.tipo_servicio_id) }], total: 1, historial: true };
+            });
+          }
+        }
+      }
+
+      var nurs = Array.from(new Set(filas.map(function (f) { return f.nur; }).filter(function (n) { return /^\d+$/.test(n); })));
+      for (i = 0; i < nurs.length; i += 100) {
+        chunk = nurs.slice(i, i + 100);
+        var rn = await sb.from('v_agregados').select('id,nur,cpt,descripcion,proveedor,fecha_solicitud').in('nur', chunk).eq('eliminado', false);
+        if (!rn.error && rn.data) rn.data.forEach(function (x) {
+          if (!st.nurExistentes[x.nur]) st.nurExistentes[x.nur] = [];
+          st.nurExistentes[x.nur].push(x);
+        });
+      }
+    }
+
+    function evaluarYMostrar() {
+      var hoy = hoyISO();
+      var nursArchivoFilas = {};
+      st.crudas.forEach(function (f) {
+        if (!f.nur || st.omitidas[f.filaExcel]) return;
+        if (!nursArchivoFilas[f.nur]) nursArchivoFilas[f.nur] = [];
+        nursArchivoFilas[f.nur].push(f.filaExcel);
+      });
+
+      var nuevosCat = { clientes: {}, proveedores: {}, solicitantes: {}, tipos_servicio: {} };
+      var homologMap = {};
+      var homologList = [];
+      var cptMultiList = [];
+      st.evaluadas = st.crudas.map(function (f) {
+        var omitida = !!st.omitidas[f.filaExcel];
+        var errs = [];
+        var warns = [];
+        var anio = f.anio ? +f.anio : null;
+        if (!f.anio) errs.push('Falta año surtido');
+        else if (!Number.isInteger(anio) || anio < 2000 || anio > 2100) errs.push('Año surtido inválido');
+
+        var desc = f.descripcion;
+        var tipoNom = f.tipo_servicio;
+        var cptNota = '';
+        if (state.catalogoCPT && f.cpt) {
+          var infoCpt = st.cptMap[f.cpt];
+          if (!infoCpt || !infoCpt.total) {
+            if (!desc || !tipoNom) errs.push('CPT no existe en catálogo');
+          } else if (!infoCpt.hab.length) {
+            errs.push('CPT deshabilitado en catálogo');
+          } else if (infoCpt.hab.length === 1) {
+            desc = limpiar(infoCpt.hab[0].descripcion).toUpperCase();
+            tipoNom = limpiar(infoCpt.hab[0].tipo_servicio).toUpperCase();
+            cptNota = infoCpt.historial ? 'CPT tomado de historial' : 'CPT verificado en catálogo';
+          } else {
+            var idxEl = st.cptEleccion[f.filaExcel];
+            var elegida = idxEl != null ? infoCpt.hab[idxEl] : null;
+            if (elegida) {
+              desc = limpiar(elegida.descripcion).toUpperCase();
+              tipoNom = limpiar(elegida.tipo_servicio).toUpperCase();
+              cptNota = 'CPT elegido del catálogo';
+              cptMultiList.push({ filaExcel: f.filaExcel, cpt: f.cpt, opciones: infoCpt.hab, elegidaIdx: idxEl });
+            } else {
+              var match = infoCpt.hab.filter(function (o) {
+                return (!desc || norm(o.descripcion) === norm(desc)) && (!tipoNom || norm(o.tipo_servicio) === norm(tipoNom));
+              });
+              if (match.length === 1) {
+                desc = limpiar(match[0].descripcion).toUpperCase();
+                tipoNom = limpiar(match[0].tipo_servicio).toUpperCase();
+                cptNota = 'CPT verificado en catálogo';
+              } else {
+                errs.push('CPT con ' + infoCpt.hab.length + ' opciones: elige una arriba');
+                cptMultiList.push({ filaExcel: f.filaExcel, cpt: f.cpt, opciones: infoCpt.hab, elegidaIdx: null });
+              }
+            }
+          }
+        }
+
+        function resolverCat(catKey, nombreVal, etiqueta) {
+          if (!nombreVal) { errs.push('Falta ' + etiqueta); return { id: null, nombre: '' }; }
+          var item = buscarEnCatalogo(catKey, nombreVal);
+          if (item && item.activo) return { id: item.id, nombre: item.nombre };
+
+          var keyNorm = norm(nombreVal);
+          var hk = catKey + '::' + keyNorm;
+          if (!homologMap[hk]) {
+            homologMap[hk] = {
+              catKey: catKey,
+              etiqueta: etiqueta,
+              nombreVal: nombreVal,
+              keyNorm: keyNorm,
+              inactivo: !!(item && !item.activo),
+              count: 0,
+              similares: similaresCatalogo(catKey, nombreVal)
+            };
+            homologList.push(homologMap[hk]);
+          }
+          homologMap[hk].count++;
+
+          var eleccion = st.mapeoCat[catKey][keyNorm];
+          if (eleccion === '__NEW__') {
+            nuevosCat[catKey][keyNorm] = nombreVal;
+            return { id: '__NEW__:' + nombreVal, nombre: nombreVal + ' (Nuevo)' };
+          }
+          if (eleccion != null && state.byId[catKey][eleccion]) {
+            return { id: +eleccion, nombre: state.byId[catKey][eleccion].nombre };
+          }
+
+          if (homologMap[hk].similares.length) {
+            errs.push(etiqueta + ' "' + nombreVal + '" no coincide (hay similares registrados)');
+          } else if (item && !item.activo) {
+            errs.push(etiqueta + ' desactivado ("' + nombreVal + '")');
+          } else {
+            errs.push(etiqueta + ' no existe en catálogo ("' + nombreVal + '")');
+          }
+          return { id: null, nombre: nombreVal };
+        }
+
+        var cRes = resolverCat('clientes', f.cliente, 'Cliente');
+        var pRes = resolverCat('proveedores', f.proveedor, 'Proveedor');
+        var solNombre = nombreUsuarioActual();
+        var tRes = resolverCat('tipos_servicio', tipoNom, 'Tipo de servicio');
+
+        if (!f.contrarrecibo) errs.push('Falta contrarrecibo');
+        else if (!/^\d+$/.test(f.contrarrecibo)) errs.push('Contrarrecibo solo números');
+
+        if (!f.nur) errs.push('Falta NUR');
+        else if (!/^\d+$/.test(f.nur)) errs.push('NUR solo números');
+        else if (!omitida) {
+          var exNur = st.nurExistentes[f.nur];
+          if (exNur && exNur.length) {
+            warns.push('Ya existe en sistema: ' + exNur.slice(0, 2).map(function (x) {
+              return x.cpt + ' · ' + x.proveedor + ' (' + isoADMY(x.fecha_solicitud) + ')';
+            }).join(' / ') + (exNur.length > 2 ? ' (+' + (exNur.length - 2) + ')' : ''));
+          }
+          var filasMismo = (nursArchivoFilas[f.nur] || []).filter(function (n) { return n !== f.filaExcel; });
+          if (filasMismo.length) warns.push('Repetido en archivo (fila' + (filasMismo.length > 1 ? 's ' : ' ') + filasMismo.join(', ') + ')');
+        }
+
+        if (!f.cpt) errs.push('Falta CPT');
+        if (!desc) errs.push('Falta descripción');
+
+        var fechaSol = f.fecha_solicitud ? f.fecha_solicitud : hoy;
+        if (fechaSol === 'invalid') errs.push('Fecha solicitud inválida (usa dd/mm/aaaa)');
+        else if (fechaSol > hoy) errs.push('Fecha solicitud futura');
+
+        if (f.fecha_carga === 'invalid') errs.push('Fecha de carga inválida (usa dd/mm/aaaa)');
+        else if (f.fecha_carga && f.fecha_carga > hoy) errs.push('Fecha de carga futura');
+        else if (f.fecha_carga && fechaSol !== 'invalid' && f.fecha_carga < fechaSol) {
+          errs.push('Fecha de carga anterior a solicitud');
+        }
+
+        var est = f.fecha_carga ? ESTATUS.CARG : (f.estatus === norm(ESTATUS.ACL) ? ESTATUS.ACL : ESTATUS.PEND);
+        return {
+          filaExcel: f.filaExcel,
+          omitida: omitida,
+          cptNota: cptNota,
+          cliente: cRes.nombre, proveedor: pRes.nombre, solicitante: solNombre,
+          tipo_servicio: tRes.nombre, descripcion: desc,
+          datos: {
+            anio_surtido: anio,
+            cliente_id: cRes.id,
+            proveedor_id: pRes.id,
+            solicitante_id: null,
+            tipo_servicio_id: tRes.id,
+            contrarrecibo: f.contrarrecibo,
+            nur: f.nur,
+            cpt: f.cpt,
+            descripcion: desc,
+            fecha_solicitud: fechaSol,
+            fecha_carga: f.fecha_carga || null,
+            estatus: est,
+            notas: f.notas || null
+          },
+          errs: errs,
+          warns: warns
+        };
+      });
+
+      var totalNuevosCat = Object.keys(nuevosCat.clientes).length + Object.keys(nuevosCat.proveedores).length +
+        Object.keys(nuevosCat.solicitantes).length + Object.keys(nuevosCat.tipos_servicio).length;
+      var activas = st.evaluadas.filter(function (x) { return !x.omitida; });
+      var omitidasCount = st.evaluadas.length - activas.length;
+      var validas = activas.filter(function (x) { return !x.errs.length; });
+      var conError = activas.filter(function (x) { return x.errs.length; });
+      var conWarn = validas.filter(function (x) { return x.warns.length; });
+
+      var html =
+        '<div class="masivo-stats">' +
+          '<b>' + esc(st.nombreArchivo) + '</b>' +
+          '<span class="badge neutral">' + st.evaluadas.length + ' filas leídas</span>' +
+          '<span class="badge ok">' + validas.length + ' válidas</span>' +
+          (conWarn.length ? '<span class="badge warn">' + conWarn.length + ' con NUR repetido</span>' : '') +
+          (conError.length ? '<span class="badge bad">' + conError.length + ' con errores</span>' : '') +
+          (omitidasCount ? '<span class="badge neutral">' + omitidasCount + ' omitidas</span>' : '') +
+          '<span class="spacer"></span>' +
+          '<button type="button" class="btn-ghost btn-sm" id="masivo-limpiar">Quitar archivo</button>' +
+          '<button type="button" class="btn-primary btn-sm" id="masivo-importar"' + (validas.length ? '' : ' disabled') + '>' + icon('i-check') + 'Validado y cargar ' + validas.length + (validas.length === 1 ? ' registro' : ' registros') + '</button>' +
+        '</div>';
+
+      if (cptMultiList.length) {
+        var cptPend = cptMultiList.filter(function (x) { return x.elegidaIdx == null; }).length;
+        html += '<div class="homolog-box mt-12">' +
+          '<div class="row"><b>Selección de CPT (múltiples opciones en catálogo)</b>' +
+            (cptPend ? '<span class="badge warn">' + cptPend + ' por elegir</span>' : '<span class="badge ok">Todos elegidos</span>') +
+          '</div>' +
+          '<p class="card-hint mt-8">Estos CPT tienen más de una descripción en el catálogo de procedimientos. Elige la correcta para cada fila:</p>' +
+          '<div class="homolog-list">' +
+          cptMultiList.map(function (c) {
+            return '<div class="homolog-item">' +
+              '<div class="homolog-meta"><div class="row"><span class="badge neutral plain">Fila ' + c.filaExcel + '</span><b class="mono">CPT ' + esc(c.cpt) + '</b></div></div>' +
+              '<div class="homolog-ctrl">' +
+                c.opciones.map(function (o, oi) {
+                  var act = c.elegidaIdx === oi;
+                  return '<button type="button" class="' + (act ? 'btn-primary' : 'btn-ghost') + ' btn-sm" data-cpt-fila="' + c.filaExcel + '" data-cpt-idx="' + oi + '">' +
+                    (act ? icon('i-check') : '') + esc(limpiar(o.descripcion).toUpperCase()) + ' · ' + esc(o.tipo_servicio) + '</button>';
+                }).join('') +
+              '</div>' +
+            '</div>';
+          }).join('') +
+          '</div></div>';
+      }
+
+      if (homologList.length) {
+        var sinResolver = homologList.filter(function (h) { return !st.mapeoCat[h.catKey][h.keyNorm]; }).length;
+        html += '<div class="homolog-box mt-12">' +
+          '<div class="row"><b>Homologación de catálogos</b>' +
+            (sinResolver
+              ? '<span class="badge warn">' + sinResolver + (sinResolver === 1 ? ' valor pendiente' : ' valores pendientes') + '</span>'
+              : '<span class="badge ok">Todos resueltos</span>') +
+          '</div>' +
+          '<p class="card-hint mt-8">Algunos valores del Excel no coinciden exactamente con los catálogos registrados. Elige el registro correcto para evitar duplicados o dalo de alta como nuevo.</p>' +
+          '<div class="homolog-list">' +
+          homologList.map(function (h) {
+            var selVal = st.mapeoCat[h.catKey][h.keyNorm] || '';
+            var simIds = {};
+            h.similares.forEach(function (s) { simIds[s.id] = true; });
+            var activos = state.cat[h.catKey].filter(function (x) { return x.activo; });
+            var otros = activos.filter(function (x) { return !simIds[x.id]; });
+
+            var msg = h.similares.length
+              ? 'No se encontró <b>' + esc(h.nombreVal) + '</b>, pero tenemos ' + (h.similares.length === 1 ? 'este similar registrado' : 'estos similares registrados') + '. ¿Alguno es el correcto?'
+              : (h.inactivo
+                ? '<b>' + esc(h.nombreVal) + '</b> está desactivado en el catálogo. Puedes elegir otro o reactivarlo/darlo de alta.'
+                : 'No se encontró <b>' + esc(h.nombreVal) + '</b> ni hay similares registrados.');
+
+            var btnsSim = h.similares.slice(0, 3).map(function (s) {
+              var activo = String(selVal) === String(s.id);
+              return '<button type="button" class="' + (activo ? 'btn-primary' : 'btn-ghost') + ' btn-sm" data-h-pick="' + s.id + '" data-h-cat="' + h.catKey + '" data-h-key="' + esc(h.keyNorm) + '">' +
+                (activo ? icon('i-check') : '') + 'Usar: ' + esc(s.nombre) + '</button>';
+            }).join('');
+
+            var opts = '<option value="">-- Elige una opción --</option>';
+            if (h.similares.length) {
+              opts += '<optgroup label="Similares encontrados">' + h.similares.map(function (s) {
+                return '<option value="' + s.id + '"' + (String(selVal) === String(s.id) ? ' selected' : '') + '>' + esc(s.nombre) + '</option>';
+              }).join('') + '</optgroup>';
+            }
+            if (otros.length) {
+              opts += '<optgroup label="Todos en el catálogo">' + otros.map(function (s) {
+                return '<option value="' + s.id + '"' + (String(selVal) === String(s.id) ? ' selected' : '') + '>' + esc(s.nombre) + '</option>';
+              }).join('') + '</optgroup>';
+            }
+            opts += '<option value="__NEW__"' + (selVal === '__NEW__' ? ' selected' : '') + '>+ ' + (h.inactivo ? 'Reactivar' : 'Dar de alta como nuevo') + ' ("' + esc(h.nombreVal) + '")</option>';
+
+            return '<div class="homolog-item">' +
+              '<div class="homolog-meta">' +
+                '<div class="row"><span class="badge neutral plain">' + esc(h.etiqueta) + '</span><b>' + esc(h.nombreVal) + '</b><span class="muted" style="font-size:12px">(' + h.count + (h.count === 1 ? ' fila' : ' filas') + ')</span></div>' +
+                '<span class="card-hint">' + msg + '</span>' +
+              '</div>' +
+              '<div class="homolog-ctrl">' + btnsSim +
+                '<select class="field" data-h-sel="1" data-h-cat="' + h.catKey + '" data-h-key="' + esc(h.keyNorm) + '">' + opts + '</select>' +
+              '</div>' +
+            '</div>';
+          }).join('') +
+          '</div></div>';
+      }
+
+      if (totalNuevosCat) {
+        var resumenCat = [
+          Object.keys(nuevosCat.clientes).length && (Object.keys(nuevosCat.clientes).length + ' cliente(s)'),
+          Object.keys(nuevosCat.proveedores).length && (Object.keys(nuevosCat.proveedores).length + ' proveedor(es)'),
+          Object.keys(nuevosCat.solicitantes).length && (Object.keys(nuevosCat.solicitantes).length + ' solicitante(s)'),
+          Object.keys(nuevosCat.tipos_servicio).length && (Object.keys(nuevosCat.tipos_servicio).length + ' tipo(s) de servicio')
+        ].filter(Boolean).join(', ');
+        html += '<div class="notice info mt-12">' + icon('i-info') + '<span>Al importar se darán de alta o reactivarán: <b>' + esc(resumenCat) + '</b>.</span></div>';
+      }
+      if (conError.length && validas.length) {
+        html += '<div class="notice warn mt-12">' + icon('i-alert') + '<span>Las <b>' + conError.length + '</b> filas con errores se omitirán; solo se importarán las <b>' + validas.length + '</b> válidas.</span></div>';
+      } else if (conError.length && !validas.length) {
+        html += '<div class="notice bad mt-12">' + icon('i-alert') + '<span>Todas las filas tienen errores pendientes. Revisa los paneles de arriba o la columna <b>Detalle / Acción</b> en la tabla para habilitar el botón <b>Importar</b>.</span></div>';
+      }
+
+      var visibles = st.evaluadas.filter(function (r) {
+        if (st.filtroPrev === 'errores') return !r.omitida && r.errs.length;
+        if (st.filtroPrev === 'nurs') return !r.omitida && !r.errs.length && r.warns.length;
+        return true;
+      });
+      var faltaTag = '<span class="badge bad plain">Falta</span>';
+
+      html += '<div class="toolbar mt-12">' +
+        '<div class="seg" role="group" aria-label="Filtrar vista previa">' +
+          '<button type="button" class="seg-btn" data-prev-filtro="todas" aria-selected="' + (st.filtroPrev === 'todas') + '">Todas (' + st.evaluadas.length + ')</button>' +
+          '<button type="button" class="seg-btn" data-prev-filtro="errores" aria-selected="' + (st.filtroPrev === 'errores') + '">Con errores (' + conError.length + ')</button>' +
+          '<button type="button" class="seg-btn" data-prev-filtro="nurs" aria-selected="' + (st.filtroPrev === 'nurs') + '">NUR duplicados (' + conWarn.length + ')</button>' +
+        '</div>' +
+      '</div>';
+
+      html += '<div class="table-wrap mt-12" style="max-height:420px;overflow:auto"><table class="grid"><thead><tr>' +
+        '<th>Fila</th><th>Estado</th><th>Año</th><th>Cliente</th><th>Proveedor</th><th>Contrarrecibo</th><th>NUR</th><th>CPT</th><th>Descripción</th><th>Tipo</th><th>Solicitante</th><th>F. Solicitud</th><th>F. Carga</th><th>Detalle / Acción</th>' +
+        '</tr></thead><tbody>' +
+        (visibles.length ? visibles.map(function (r) {
+          var cls = r.omitida ? '' : (r.errs.length ? 'row-bad' : (r.warns.length ? 'row-warn' : ''));
+          var estBadge = r.omitida
+            ? '<span class="badge neutral">Omitida</span>'
+            : (r.errs.length ? '<span class="badge bad">Error</span>' : (r.warns.length ? '<span class="badge warn">NUR repetido</span>' : '<span class="badge ok">Válida</span>'));
+          var btnVerNur = (!r.omitida && st.nurExistentes[r.datos.nur] && st.nurExistentes[r.datos.nur].length)
+            ? '<button type="button" class="btn-ghost btn-sm" style="margin-top:4px;margin-right:4px" data-ver-nur="' + esc(r.datos.nur) + '">Ver información</button>'
+            : '';
+          var btnOmitir = (r.warns.length || r.omitida)
+            ? '<button type="button" class="btn-ghost btn-sm" style="margin-top:4px" data-omitir-fila="' + r.filaExcel + '">' + (r.omitida ? 'Incluir fila' : 'Omitir fila') + '</button>'
+            : '';
+          var det = r.omitida
+            ? '<span class="muted">Se omitirá en la carga</span>' + btnOmitir
+            : (r.errs.length
+              ? '<ul class="masivo-err-list">' + r.errs.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' + btnVerNur
+              : (r.warns.length
+                ? '<div style="color:var(--warn-ink);font-size:12px">' + esc(r.warns.join(' · ')) + '</div>' + (r.cptNota ? '<div class="muted" style="font-size:11.5px">' + esc(r.cptNota) + '</div>' : '') + btnVerNur + btnOmitir
+                : '<span class="muted">' + esc(r.cptNota || 'Lista') + '</span>'));
+          return '<tr class="' + cls + '"' + (r.omitida ? ' style="opacity:.55"' : '') + '>' +
+            '<td class="num">' + r.filaExcel + '</td><td>' + estBadge + '</td>' +
+            '<td class="num">' + (r.datos.anio_surtido ? esc(r.datos.anio_surtido) : faltaTag) + '</td>' +
+            '<td>' + (r.cliente ? esc(r.cliente) : faltaTag) + '</td><td>' + (r.proveedor ? esc(r.proveedor) : faltaTag) + '</td>' +
+            '<td class="mono">' + (r.datos.contrarrecibo ? esc(r.datos.contrarrecibo) : faltaTag) + '</td>' +
+            '<td class="mono">' + (r.datos.nur ? esc(r.datos.nur) : faltaTag) + '</td>' +
+            '<td class="mono">' + (r.datos.cpt ? esc(r.datos.cpt) : faltaTag) + '</td>' +
+            '<td>' + (r.descripcion ? esc(r.descripcion) : faltaTag) + '</td>' +
+            '<td>' + (r.tipo_servicio ? esc(r.tipo_servicio) : faltaTag) + '</td><td>' + esc(r.solicitante) + '</td>' +
+            '<td class="num">' + (!r.datos.fecha_solicitud ? faltaTag : (r.datos.fecha_solicitud === 'invalid' ? '<span class="badge bad plain">Inválida</span>' : isoADMY(r.datos.fecha_solicitud))) + '</td>' +
+            '<td class="num">' + (r.datos.fecha_carga === 'invalid' ? '<span class="badge bad plain">Inválida</span>' : (r.datos.fecha_carga ? isoADMY(r.datos.fecha_carga) : '—')) + '</td>' +
+            '<td>' + det + '</td></tr>';
+        }).join('') : '<tr><td colspan="14" class="empty">No hay filas en este filtro.</td></tr>') +
+        '</tbody></table></div>';
+
+      prev.innerHTML = html;
+      $$('[data-prev-filtro]', prev).forEach(function (b) {
+        b.addEventListener('click', function () { st.filtroPrev = b.dataset.prevFiltro; evaluarYMostrar(); });
+      });
+      $$('[data-cpt-fila]', prev).forEach(function (b) {
+        b.addEventListener('click', function () {
+          st.cptEleccion[b.dataset.cptFila] = +b.dataset.cptIdx;
+          evaluarYMostrar();
+        });
+      });
+      $$('[data-ver-nur]', prev).forEach(function (b) {
+        b.addEventListener('click', function () { verInfoNur(b.dataset.verNur); });
+      });
+      $$('[data-omitir-fila]', prev).forEach(function (b) {
+        b.addEventListener('click', function () {
+          var fNum = b.dataset.omitirFila;
+          if (st.omitidas[fNum]) delete st.omitidas[fNum]; else st.omitidas[fNum] = true;
+          evaluarYMostrar();
+        });
+      });
+      $$('[data-h-pick]', prev).forEach(function (b) {
+        b.addEventListener('click', function () {
+          st.mapeoCat[b.dataset.hCat][b.dataset.hKey] = b.dataset.hPick;
+          evaluarYMostrar();
+        });
+      });
+      $$('[data-h-sel]', prev).forEach(function (sel) {
+        sel.addEventListener('change', function () {
+          if (sel.value) st.mapeoCat[sel.dataset.hCat][sel.dataset.hKey] = sel.value;
+          else delete st.mapeoCat[sel.dataset.hCat][sel.dataset.hKey];
+          evaluarYMostrar();
+        });
+      });
+      $('#masivo-limpiar', prev).addEventListener('click', function () { st.crudas = []; st.evaluadas = []; prev.hidden = true; prev.innerHTML = ''; });
+      $('#masivo-importar', prev).addEventListener('click', function () { importarFilasMasivas(validas, conWarn, nuevosCat); });
+    }
+
+    async function importarFilasMasivas(validas, conWarn, nuevosCat) {
+      if (!validas.length || st.importando) return;
+      if (conWarn.length) {
+        var detalleDup = conWarn.slice(0, 6).map(function (r) {
+          return '<li><b>Fila ' + r.filaExcel + ' · NUR ' + esc(r.datos.nur) + ':</b> ' + esc(r.warns.join(' · ')) + '</li>';
+        }).join('') + (conWarn.length > 6 ? '<li>…y ' + (conWarn.length - 6) + ' más.</li>' : '');
+        var ok = await confirmar(
+          'Hay ' + conWarn.length + (conWarn.length === 1 ? ' fila' : ' filas') + ' con NUR repetido',
+          '<p class="card-hint" style="margin-bottom:8px">¿Es otro estudio del mismo paciente? Si prefieres no subir alguno, cancela y haz clic en <b>Omitir fila</b> en la vista previa.</p>' +
+          '<ul style="margin:0;padding-left:18px;font-size:12.5px">' + detalleDup + '</ul>',
+          'Importar de todas formas'
+        );
+        if (!ok) return;
+      }
+
+      st.importando = true;
+      var btn = $('#masivo-importar', prev);
+      cargando(btn, true, 'Importando…');
+      try {
+        // 1. Obtener/crear solicitante del usuario en sesión y dar de alta catálogos nuevos elegidos
+        var solIdUsuario = await obtenerSolicitanteUsuarioId();
+        var cats = ['clientes', 'proveedores', 'tipos_servicio'];
+        for (var ci = 0; ci < cats.length; ci++) {
+          var ck = cats[ci], keys = Object.keys(nuevosCat[ck]);
+          for (var ki = 0; ki < keys.length; ki++) {
+            await altaCatalogo(ck, nuevosCat[ck][keys[ki]]);
+          }
+        }
+        validas.forEach(function (r) {
+          r.datos.solicitante_id = solIdUsuario;
+          var mapa = { cliente_id: 'clientes', proveedor_id: 'proveedores', tipo_servicio_id: 'tipos_servicio' };
+          Object.keys(mapa).forEach(function (campoId) {
+            var val = r.datos[campoId];
+            if (typeof val === 'string' && val.indexOf('__NEW__:') === 0) {
+              var item = buscarEnCatalogo(mapa[campoId], val.slice(8));
+              if (!item) throw new Error('No se encontró el ID creado para ' + val.slice(8));
+              r.datos[campoId] = item.id;
+            }
+          });
+        });
+
+        // 2. Insertar en lotes de 100
+        var insertados = 0;
+        var loteSize = 100;
+        for (var i = 0; i < validas.length; i += loteSize) {
+          var lote = validas.slice(i, i + loteSize);
+          var payload = lote.map(function (r) { return r.datos; });
+          var res = await sb.from('agregados').insert(payload).select('id');
+          if (res.error) throw res.error;
+          insertados += lote.length;
+          lote.forEach(function (r) {
+            capturados.push({
+              contrarrecibo: r.datos.contrarrecibo,
+              nur: r.datos.nur,
+              cpt: r.datos.cpt,
+              descripcion: r.datos.descripcion,
+              tipo_servicio: nombreDe('tipos_servicio', r.datos.tipo_servicio_id)
+            });
+          });
+        }
+
+        state.consultaSucia = true;
+        actualizarContadorNav();
+        var hayNuevoAnio = validas.some(function (r) { return state.anios.indexOf(r.datos.anio_surtido) < 0; });
+        if (hayNuevoAnio) await cargarCatalogos();
+        pintarSesion();
+        toast('ok', 'Carga masiva completada', insertados + (insertados === 1 ? ' agregado guardado' : ' agregados guardados'));
+        st.crudas = []; st.evaluadas = [];
+        prev.innerHTML = '<div class="notice ok">' + icon('i-check') + '<span><b>Listo.</b> Se importaron <b>' + insertados + '</b> ' + (insertados === 1 ? 'registro' : 'registros') + ' correctamente. Puedes subir otro archivo o ir a <a href="#consulta" style="text-decoration:underline;font-weight:700">Consulta</a>.</span></div>';
+      } catch (e) {
+        toast('bad', 'Error en la carga masiva', mensajeError(e));
+        cargando(btn, false);
+      } finally {
+        st.importando = false;
+      }
+    }
+  }
+
   /* ---------- Capturados en esta sesión (para copiarlos juntos al correo) ---------- */
   var capturados = [];
+  // Pantalla Nuevo agregado más la lista "Capturados en esta sesión".
   function iniciarNuevo() {
     var panel = document.createElement('div');
     panel.id = 'sesion'; panel.className = 'sesion'; panel.hidden = true;
@@ -2074,12 +2990,27 @@
       if (e.target.closest('[data-copiar-sesion]')) copiarParaCorreo(capturados);
       if (e.target.closest('[data-vaciar-sesion]')) { capturados = []; pintarSesion(); }
     });
-    if (state.catalogoCPT) {
-      var hint = $('#view-nuevo .card-hint');
-      if (hint) hint.innerHTML = 'Todos los campos con <span style="color:var(--bad)">*</span> son obligatorios. El <b>tipo de servicio</b> y la <b>descripción</b> se llenan solos con el CPT. Al guardar se conservan cliente, proveedor, solicitante, contrarrecibo y fecha para capturar el siguiente estudio más rápido.';
-    }
+    var hintUno = state.catalogoCPT
+      ? 'Todos los campos con <span style="color:var(--bad)">*</span> son obligatorios. El <b>tipo de servicio</b> y la <b>descripción</b> se llenan solos con el CPT. Al guardar se conservan cliente, proveedor, solicitante, contrarrecibo y fecha para capturar el siguiente estudio más rápido.'
+      : 'Todos los campos con <span style="color:var(--bad)">*</span> son obligatorios. Al guardar se conservan cliente, proveedor, solicitante, tipo, contrarrecibo y fecha para capturar el siguiente estudio más rápido.';
+    var hintMasivo = 'Sube un archivo Excel (.xlsx, .xls o .csv) con múltiples agregados para validarlos e importarlos todos juntos.';
+    var hintEl = $('#nuevo-hint');
+    if (hintEl) hintEl.innerHTML = hintUno;
+
     Formulario($('#form-nuevo'), { modo: 'nuevo', onCreado: function (r) { capturados.push(r); pintarSesion(); } });
+    iniciarMasivo();
+
+    $$('[data-nuevo-modo]', $('#view-nuevo')).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var modo = btn.dataset.nuevoModo;
+        $$('[data-nuevo-modo]', $('#view-nuevo')).forEach(function (b) { b.setAttribute('aria-selected', b === btn ? 'true' : 'false'); });
+        $('#form-nuevo').hidden = modo !== 'uno';
+        $('#masivo-wrap').hidden = modo !== 'masivo';
+        if (hintEl) hintEl.innerHTML = modo === 'masivo' ? hintMasivo : hintUno;
+      });
+    });
   }
+  // Dibujo la lista de lo capturado en esta sesión con su botón de copiar.
   function pintarSesion() {
     var panel = $('#sesion'); if (!panel) return;
     panel.hidden = !capturados.length;
@@ -2092,10 +3023,353 @@
       '</table></div><p class="card-hint mt-8">La lista se vacía al cerrar o recargar la página. Lo guardado ya está en la base.</p>';
   }
 
+  /* ---------- Actualizar agregado masivamente (estatus / fecha de carga / notas) ---------- */
+  function descargarPlantillaActualizar() {
+    if (!window.XLSX) { toast('bad', 'No se cargó la librería de Excel'); return; }
+    var enc = ['NUR', 'CPT', 'FECHA DE CARGA', 'ESTATUS', 'NOTAS'];
+    var ejemplo = [
+      { t: 's', v: '987654321' },
+      { t: 's', v: '70450' },
+      { t: 's', v: isoADMY(hoyISO()) },
+      { t: 's', v: 'CARGADO' },
+      { t: 's', v: '' }
+    ];
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet([enc]);
+    ejemplo.forEach(function (c, i) { ws[XLSX.utils.encode_cell({ r: 1, c: i })] = c; });
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 1, c: enc.length - 1 } });
+    ws['!cols'] = [18, 16, 18, 32, 34].map(function (w) { return { wch: w }; });
+    XLSX.utils.book_append_sheet(wb, ws, 'ACTUALIZAR');
+
+    var inst = [
+      ['INSTRUCCIONES PARA ACTUALIZACIÓN MASIVA'],
+      ['1. Este apartado solo actualiza registros que YA existen en la base (no crea altas nuevas).'],
+      ['2. NUR es obligatorio. CPT es recomendado para identificar el estudio cuando un mismo NUR tiene varios agregados.'],
+      ['3. Si capturas FECHA DE CARGA (dd/mm/aaaa), el estatus pasa automáticamente a CARGADO.'],
+      ['4. Si dejas FECHA DE CARGA vacía, puedes cambiar ESTATUS a PENDIENTE o ACLARACIÓN SERVICIO NO BRINDADO.'],
+      ['5. NOTAS es opcional: si viene vacía se conserva la nota actual del registro.'],
+      ['6. Borra o reemplaza la fila 2 de ejemplo antes de subir tu archivo.']
+    ];
+    var wsInst = XLSX.utils.aoa_to_sheet(inst);
+    wsInst['!cols'] = [{ wch: 110 }];
+    XLSX.utils.book_append_sheet(wb, wsInst, 'INSTRUCCIONES');
+    XLSX.writeFile(wb, 'plantilla_actualizar_agregados.xlsx');
+  }
+
+  function iniciarActualizar() {
+    var wrap = $('#actualizar-wrap');
+    if (!wrap) return;
+    wrap.innerHTML =
+      '<div class="toolbar" style="margin-bottom:14px">' +
+        '<button type="button" class="btn-ghost btn-sm" id="act-tpl">' + icon('i-download') + 'Descargar plantilla Excel</button>' +
+        '<span class="card-hint">Columnas: <b>NUR</b>, <b>CPT</b> (opcional si es único), <b>FECHA DE CARGA</b>, <b>ESTATUS</b> y <b>NOTAS</b>.</span>' +
+      '</div>' +
+      '<div class="dropzone" id="act-drop" tabindex="0" role="button" aria-label="Seleccionar archivo Excel para actualizar">' +
+        icon('i-upload') +
+        '<b>Haz clic o arrastra aquí tu archivo Excel (.xlsx, .xls, .csv)</b>' +
+        '<span>Se buscarán los registros existentes y verás una vista previa antes de aplicar los cambios.</span>' +
+        '<input type="file" id="act-file" accept=".xlsx,.xls,.csv" hidden />' +
+      '</div>' +
+      '<div id="act-preview" class="mt-16" hidden></div>';
+
+    var st = { nombreArchivo: '', crudas: [], evaluadas: [], dbByNur: {}, elegidos: {}, filtro: 'todas', guardando: false };
+    var inp = $('#act-file', wrap), drop = $('#act-drop', wrap), prev = $('#act-preview', wrap);
+
+    $('#act-tpl', wrap).addEventListener('click', descargarPlantillaActualizar);
+    drop.addEventListener('click', function () { if (!st.guardando) inp.click(); });
+    drop.addEventListener('keydown', function (e) { if ((e.key === 'Enter' || e.key === ' ') && !st.guardando) { e.preventDefault(); inp.click(); } });
+    drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('is-drag'); });
+    drop.addEventListener('dragleave', function () { drop.classList.remove('is-drag'); });
+    drop.addEventListener('drop', function (e) {
+      e.preventDefault(); drop.classList.remove('is-drag');
+      if (!st.guardando && e.dataTransfer.files && e.dataTransfer.files[0]) leerArchivoAct(e.dataTransfer.files[0]);
+    });
+    inp.addEventListener('change', function () {
+      if (inp.files && inp.files[0]) leerArchivoAct(inp.files[0]);
+      inp.value = '';
+    });
+
+    async function leerArchivoAct(file) {
+      if (!window.XLSX) { toast('bad', 'No se cargó la librería de Excel'); return; }
+      st.nombreArchivo = file.name;
+      prev.hidden = false;
+      prev.innerHTML = '<div class="notice info"><span class="spinner" style="width:14px;height:14px"></span><span>Buscando registros en la base para <b>' + esc(file.name) + '</b>…</span></div>';
+      try {
+        var buf = await file.arrayBuffer();
+        var wb = XLSX.read(buf, { type: 'array', cellDates: false });
+        var hojaNombre = wb.SheetNames.filter(function (n) { return norm(n) === 'ACTUALIZAR'; })[0] || wb.SheetNames[0];
+        var ws = wb.Sheets[hojaNombre];
+        if (!ws || !ws['!ref']) throw new Error('La hoja está vacía.');
+        var rng = XLSX.utils.decode_range(ws['!ref']);
+        var cols = {};
+        for (var c = rng.s.c; c <= rng.e.c; c++) {
+          var hCell = ws[XLSX.utils.encode_cell({ r: rng.s.r, c: c })];
+          var hKey = MASIVO_MAP[norm(celdaTextoExcel(hCell))];
+          if (hKey && cols[hKey] == null) cols[hKey] = c;
+        }
+        if (cols.nur == null) throw new Error('Falta la columna obligatoria NUR en la fila 1.');
+        if (cols.fecha_carga == null && cols.estatus == null && cols.notas == null) {
+          throw new Error('El archivo debe incluir al menos una columna por actualizar: FECHA DE CARGA, ESTATUS o NOTAS.');
+        }
+
+        var filas = [];
+        for (var r = rng.s.r + 1; r <= rng.e.r; r++) {
+          var celda = function (k) { return cols[k] == null ? null : ws[XLSX.utils.encode_cell({ r: r, c: cols[k] })]; };
+          var raw = {
+            filaExcel: r + 1,
+            nur: celdaTextoExcel(celda('nur')),
+            cpt: celdaTextoExcel(celda('cpt')).toUpperCase(),
+            fecha_carga: celdaFechaExcel(celda('fecha_carga')),
+            estatus: norm(celdaTextoExcel(celda('estatus'))),
+            notas: celdaTextoExcel(celda('notas'))
+          };
+          var vacia = !raw.nur && !raw.cpt && !raw.fecha_carga && !raw.estatus && !raw.notas;
+          if (!vacia) filas.push(raw);
+        }
+        if (!filas.length) throw new Error('No se encontraron filas con datos debajo de los encabezados.');
+
+        st.crudas = filas;
+        st.dbByNur = {};
+        st.elegidos = {};
+        st.filtro = 'todas';
+
+        var nurs = Array.from(new Set(filas.map(function (f) { return f.nur; }).filter(function (n) { return /^\d+$/.test(n); })));
+        for (var i = 0; i < nurs.length; i += 100) {
+          var chunk = nurs.slice(i, i + 100);
+          var res = await sb.from('v_agregados')
+            .select('id,nur,cpt,descripcion,cliente,proveedor,fecha_solicitud,fecha_carga,estatus,notas')
+            .in('nur', chunk).eq('eliminado', false)
+            .order('fecha_solicitud', { ascending: false }).order('id', { ascending: false });
+          if (res.error) throw res.error;
+          (res.data || []).forEach(function (x) {
+            if (!st.dbByNur[x.nur]) st.dbByNur[x.nur] = [];
+            st.dbByNur[x.nur].push(x);
+          });
+        }
+        evaluarYMostrarAct();
+      } catch (e) {
+        prev.innerHTML = '<div class="notice bad">' + icon('i-alert') + '<span><b>No se pudo leer el archivo.</b> ' + esc(e.message || e) + '</span></div>';
+      }
+    }
+
+    function evaluarYMostrarAct() {
+      var hoy = hoyISO();
+      var ambiguos = [];
+      st.evaluadas = st.crudas.map(function (f) {
+        var errs = [];
+        var candidatos = [];
+        var target = null;
+
+        if (!f.nur) errs.push('Falta NUR');
+        else if (!/^\d+$/.test(f.nur)) errs.push('NUR solo números');
+        else {
+          var lista = st.dbByNur[f.nur] || [];
+          if (!lista.length) {
+            errs.push('NUR no encontrado en la base');
+          } else {
+            var filtrados = f.cpt ? lista.filter(function (x) { return norm(x.cpt) === norm(f.cpt); }) : lista;
+            if (f.cpt && !filtrados.length) {
+              errs.push('No existe estudio con CPT ' + f.cpt + ' para este NUR');
+            } else if (filtrados.length === 1) {
+              target = filtrados[0];
+            } else {
+              candidatos = filtrados;
+              var elId = st.elegidos[f.filaExcel];
+              target = filtrados.filter(function (x) { return x.id === elId; })[0] || null;
+              ambiguos.push({ filaExcel: f.filaExcel, nur: f.nur, candidatos: candidatos, elegidoId: target ? target.id : null });
+              if (!target) errs.push('Hay ' + filtrados.length + ' registros con este NUR: elige cuál actualizar arriba');
+            }
+          }
+        }
+
+        if (!f.fecha_carga && !f.estatus && !f.notas) {
+          errs.push('Indica fecha de carga, estatus o notas a actualizar');
+        }
+
+        var nuevaFc = f.fecha_carga;
+        if (nuevaFc === 'invalid') errs.push('Fecha de carga inválida (usa dd/mm/aaaa)');
+        else if (nuevaFc && nuevaFc > hoy) errs.push('Fecha de carga futura');
+        else if (nuevaFc && target && target.fecha_solicitud && nuevaFc < target.fecha_solicitud) {
+          errs.push('Fecha de carga anterior a solicitud (' + isoADMY(target.fecha_solicitud) + ')');
+        }
+
+        var nuevoEst = null;
+        if (nuevaFc && nuevaFc !== 'invalid') {
+          nuevoEst = ESTATUS.CARG;
+        } else if (f.estatus) {
+          if (f.estatus === norm(ESTATUS.PEND)) { nuevoEst = ESTATUS.PEND; nuevaFc = null; }
+          else if (f.estatus === norm(ESTATUS.ACL)) { nuevoEst = ESTATUS.ACL; nuevaFc = null; }
+          else if (f.estatus === norm(ESTATUS.CARG)) {
+            if (target && target.fecha_carga) { nuevoEst = ESTATUS.CARG; nuevaFc = target.fecha_carga; }
+            else errs.push('Para marcar CARGADO captura la fecha de carga');
+          } else {
+            errs.push('Estatus inválido (usa PENDIENTE, ACLARACIÓN SERVICIO NO BRINDADO o fecha de carga)');
+          }
+        } else if (target) {
+          nuevoEst = target.estatus;
+          nuevaFc = target.fecha_carga || null;
+        }
+
+        var payload = null;
+        if (target && !errs.length) {
+          payload = {
+            fecha_carga: nuevaFc || null,
+            estatus: nuevoEst
+          };
+          if (f.notas) payload.notas = f.notas;
+        }
+
+        return {
+          filaExcel: f.filaExcel,
+          nur: f.nur,
+          cpt: f.cpt,
+          target: target,
+          payload: payload,
+          notasNuevas: f.notas,
+          errs: errs
+        };
+      });
+
+      var validas = st.evaluadas.filter(function (x) { return !x.errs.length; });
+      var conError = st.evaluadas.filter(function (x) { return x.errs.length; });
+
+      var html =
+        '<div class="masivo-stats">' +
+          '<b>' + esc(st.nombreArchivo) + '</b>' +
+          '<span class="badge neutral">' + st.evaluadas.length + ' filas leídas</span>' +
+          '<span class="badge ok">' + validas.length + ' listas para actualizar</span>' +
+          (conError.length ? '<span class="badge bad">' + conError.length + ' con errores</span>' : '') +
+          '<span class="spacer"></span>' +
+          '<button type="button" class="btn-ghost btn-sm" id="act-limpiar">Quitar archivo</button>' +
+          '<button type="button" class="btn-primary btn-sm" id="act-guardar"' + (validas.length ? '' : ' disabled') + '>' + icon('i-check') + 'Validado y actualizar ' + validas.length + (validas.length === 1 ? ' registro' : ' registros') + '</button>' +
+        '</div>';
+
+      if (ambiguos.length) {
+        var pendAmb = ambiguos.filter(function (a) { return !a.elegidoId; }).length;
+        html += '<div class="homolog-box mt-12">' +
+          '<div class="row"><b>NUR con varios estudios registrados</b>' +
+            (pendAmb ? '<span class="badge warn">' + pendAmb + ' por elegir</span>' : '<span class="badge ok">Todos elegidos</span>') +
+          '</div>' +
+          '<p class="card-hint mt-8">Estos NUR tienen más de un agregado en la base. Elige cuál deseas actualizar (o agrega la columna CPT en tu Excel para hacerlo automático):</p>' +
+          '<div class="homolog-list">' +
+          ambiguos.map(function (a) {
+            return '<div class="homolog-item">' +
+              '<div class="homolog-meta"><div class="row"><span class="badge neutral plain">Fila ' + a.filaExcel + '</span><b class="mono">NUR ' + esc(a.nur) + '</b>' +
+                '<button type="button" class="btn-ghost btn-sm" data-act-ver="' + esc(a.nur) + '">Ver información</button></div></div>' +
+              '<div class="homolog-ctrl">' +
+                '<select class="field" data-act-pick="' + a.filaExcel + '">' +
+                  '<option value="">-- Elige el estudio a actualizar --</option>' +
+                  a.candidatos.map(function (c) {
+                    return '<option value="' + c.id + '"' + (a.elegidoId === c.id ? ' selected' : '') + '>' +
+                      esc(c.cpt + ' · ' + c.descripcion + ' — ' + c.proveedor + ' (' + isoADMY(c.fecha_solicitud) + ' · ' + c.estatus + ')') +
+                    '</option>';
+                  }).join('') +
+                '</select>' +
+              '</div>' +
+            '</div>';
+          }).join('') +
+          '</div></div>';
+      }
+
+      if (conError.length && validas.length) {
+        html += '<div class="notice warn mt-12">' + icon('i-alert') + '<span>Las <b>' + conError.length + '</b> filas con errores se omitirán; solo se actualizarán las <b>' + validas.length + '</b> listas.</span></div>';
+      } else if (conError.length && !validas.length) {
+        html += '<div class="notice bad mt-12">' + icon('i-alert') + '<span>Todas las filas tienen errores pendientes. Revisa la columna <b>Detalle / Acción</b> para habilitar el botón de actualizar.</span></div>';
+      }
+
+      var visibles = st.evaluadas.filter(function (r) {
+        if (st.filtro === 'errores') return r.errs.length;
+        return true;
+      });
+
+      html += '<div class="toolbar mt-12"><div class="seg" role="group" aria-label="Filtrar vista previa">' +
+        '<button type="button" class="seg-btn" data-act-filtro="todas" aria-selected="' + (st.filtro === 'todas') + '">Todas (' + st.evaluadas.length + ')</button>' +
+        '<button type="button" class="seg-btn" data-act-filtro="errores" aria-selected="' + (st.filtro === 'errores') + '">Con errores (' + conError.length + ')</button>' +
+      '</div></div>';
+
+      html += '<div class="table-wrap mt-12" style="max-height:420px;overflow:auto"><table class="grid"><thead><tr>' +
+        '<th>Fila</th><th>Estado</th><th>NUR</th><th>CPT</th><th>Estudio / Proveedor</th><th>Estatus actual → Nuevo</th><th>F. Carga actual → Nueva</th><th>Detalle / Acción</th>' +
+        '</tr></thead><tbody>' +
+        (visibles.length ? visibles.map(function (r) {
+          var cls = r.errs.length ? 'row-bad' : '';
+          var estBadge = r.errs.length ? '<span class="badge bad">Error</span>' : '<span class="badge ok">Listo</span>';
+          var estudioTxt = r.target
+            ? '<div><b>' + esc(r.target.descripcion) + '</b></div><div class="muted" style="font-size:12px">' + esc(r.target.cliente + ' · ' + r.target.proveedor) + '</div>'
+            : '<span class="muted">—</span>';
+          var estCambio = r.target && r.payload
+            ? badgeEstatus(r.target.estatus) + ' → ' + badgeEstatus(r.payload.estatus)
+            : (r.target ? badgeEstatus(r.target.estatus) : '—');
+          var fcCambio = r.target && r.payload
+            ? (r.target.fecha_carga ? isoADMY(r.target.fecha_carga) : '—') + ' → <b>' + (r.payload.fecha_carga ? isoADMY(r.payload.fecha_carga) : '—') + '</b>'
+            : (r.target && r.target.fecha_carga ? isoADMY(r.target.fecha_carga) : '—');
+          var btnVer = (r.nur && st.dbByNur[r.nur] && st.dbByNur[r.nur].length)
+            ? '<button type="button" class="btn-ghost btn-sm" style="margin-top:4px" data-act-ver="' + esc(r.nur) + '">Ver información</button>'
+            : '';
+          var det = r.errs.length
+            ? '<ul class="masivo-err-list">' + r.errs.map(function (e) { return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' + btnVer
+            : '<span class="muted">Se actualizará en Supabase' + (r.notasNuevas ? ' (+ notas)' : '') + '</span>' + (btnVer ? '<br>' + btnVer : '');
+
+          return '<tr class="' + cls + '">' +
+            '<td class="num">' + r.filaExcel + '</td><td>' + estBadge + '</td>' +
+            '<td class="mono">' + (r.nur ? esc(r.nur) : '<span class="badge bad plain">Falta</span>') + '</td>' +
+            '<td class="mono">' + esc((r.target && r.target.cpt) || r.cpt || '—') + '</td>' +
+            '<td>' + estudioTxt + '</td>' +
+            '<td>' + estCambio + '</td>' +
+            '<td class="num">' + fcCambio + '</td>' +
+            '<td>' + det + '</td></tr>';
+        }).join('') : '<tr><td colspan="8" class="empty">No hay filas en este filtro.</td></tr>') +
+        '</tbody></table></div>';
+
+      prev.innerHTML = html;
+      $$('[data-act-filtro]', prev).forEach(function (b) {
+        b.addEventListener('click', function () { st.filtro = b.dataset.actFiltro; evaluarYMostrarAct(); });
+      });
+      $$('[data-act-ver]', prev).forEach(function (b) {
+        b.addEventListener('click', function () { verInfoNur(b.dataset.actVer); });
+      });
+      $$('[data-act-pick]', prev).forEach(function (sel) {
+        sel.addEventListener('change', function () {
+          if (sel.value) st.elegidos[sel.dataset.actPick] = +sel.value;
+          else delete st.elegidos[sel.dataset.actPick];
+          evaluarYMostrarAct();
+        });
+      });
+      $('#act-limpiar', prev).addEventListener('click', function () { st.crudas = []; st.evaluadas = []; prev.hidden = true; prev.innerHTML = ''; });
+      $('#act-guardar', prev).addEventListener('click', function () { aplicarActualizacionesMasivas(validas); });
+    }
+
+    async function aplicarActualizacionesMasivas(validas) {
+      if (!validas.length || st.guardando) return;
+      st.guardando = true;
+      var btn = $('#act-guardar', prev);
+      cargando(btn, true, 'Actualizando…');
+      try {
+        var actualizados = 0;
+        for (var i = 0; i < validas.length; i++) {
+          var r = validas[i];
+          var res = await sb.from('agregados').update(r.payload).eq('id', r.target.id).select('id').single();
+          if (res.error) throw res.error;
+          actualizados++;
+        }
+        state.consultaSucia = true;
+        actualizarContadorNav();
+        toast('ok', 'Actualización completada', actualizados + (actualizados === 1 ? ' agregado actualizado' : ' agregados actualizados'));
+        st.crudas = []; st.evaluadas = [];
+        prev.innerHTML = '<div class="notice ok">' + icon('i-check') + '<span><b>Listo.</b> Se actualizaron <b>' + actualizados + '</b> ' + (actualizados === 1 ? 'registro' : 'registros') + ' en Supabase. Puedes subir otro archivo o ir a <a href="#consulta" style="text-decoration:underline;font-weight:700">Consulta</a>.</span></div>';
+      } catch (e) {
+        toast('bad', 'Error al actualizar', mensajeError(e));
+        cargando(btn, false);
+      } finally {
+        st.guardando = false;
+      }
+    }
+  }
+
   /* =========================================================================
      10. NAVEGACIÓN Y ARRANQUE
      ========================================================================= */
-  var VISTAS = ['consulta', 'nuevo', 'catalogos', 'correos', 'proveedores'];
+  var VISTAS = ['consulta', 'nuevo', 'actualizar', 'catalogos', 'correos', 'proveedores'];
+  // Navegación por #consulta, #nuevo, #actualizar, #catalogos, #correos, #proveedores, respetando el tipo de usuario.
   function enrutar() {
     if ($('#app').hidden) return;
     var v = (location.hash || '').replace('#', '');
@@ -2112,6 +3386,8 @@
     } else if (v === 'nuevo') {
       if (!state.iniciado.nuevo) { state.iniciado.nuevo = true; iniciarNuevo(); }
       setTimeout(function () { var b = $('#form-nuevo .combo-btn'); if (b) b.focus(); }, 30);
+    } else if (v === 'actualizar') {
+      if (!state.iniciado.actualizar) { state.iniciado.actualizar = true; iniciarActualizar(); }
     } else if (v === 'catalogos') {
       if (!state.iniciado.catalogos) { state.iniciado.catalogos = true; iniciarCatalogos(); }
     } else if (v === 'correos') {
@@ -2121,9 +3397,10 @@
       if (!state.iniciado.proveedores) { state.iniciado.proveedores = true; iniciarProveedores(); }
       cargarListaProveedores();
     }
-    document.title = { consulta: 'Consulta', nuevo: 'Nuevo agregado', catalogos: 'Catálogos', correos: 'Correos y respaldo', proveedores: 'Pendientes por proveedor' }[v] + ' · Seguimiento de Agregados';
+    document.title = { consulta: 'Consulta', nuevo: 'Nuevo agregado', actualizar: 'Actualizar agregado', catalogos: 'Catálogos', correos: 'Correos y respaldo', proveedores: 'Pendientes por proveedor' }[v] + ' · Seguimiento de Agregados';
   }
 
+  // Botón de modo claro / oscuro (se recuerda en el navegador).
   function iniciarTema() {
     var b = $('#theme-toggle');
     function pintar() {
@@ -2141,6 +3418,7 @@
     pintar();
   }
 
+  // Punto de arranque: creo la conexión a Supabase con los datos de config.js y reviso si hay sesión abierta.
   async function arrancar() {
     iniciarTema();
     if (!configurado()) { mostrar('setup'); return; }

@@ -1,6 +1,9 @@
 /*
   ============================================================================
   Seguimiento de Carta de Agregados — estilos
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
+  Los colores están como variables en :root (modo claro) y se redefinen
+  para el modo oscuro. Para cambiar un color, cámbialo en los dos lugares.
   Basado en el estilo de referencia (violeta, cristal, Plus Jakarta Sans,
   oscuro por defecto) y ampliado para un sistema de captura y consulta.
   ============================================================================
@@ -108,36 +111,41 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .shell { max-width: 1480px; margin: 0 auto; padding: 0 20px 64px; }
 .topbar {
   position: sticky; top: env(safe-area-inset-top, 0px); z-index: 30;
-  display: flex; align-items: center; gap: 16px; padding: 14px 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 10px 0;
 }
 body::before {
   content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 31; background: var(--page-bg);
 }
 .topbar::before {
-  content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 100vw; transform: translateX(-50%); z-index: -1;
+  content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 100vw; transform: translateX(-50%); z-index: -1; pointer-events: none;
   background: color-mix(in srgb, var(--page-bg) 82%, transparent);
   backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.brand-mark { width: 40px; height: 40px; flex-shrink: 0; }
-.brand-title { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
-.brand-sub { font-size: 12.5px; color: var(--muted); }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-mark { width: 38px; height: 38px; flex-shrink: 0; }
+.brand-title { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+.brand-sub { font-size: 12px; color: var(--muted); }
 
-.nav { display: flex; gap: 4px; padding: 4px; margin-left: auto; border-radius: 14px; background: var(--card-bg); border: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
-.nav::-webkit-scrollbar { display: none; }
+.nav {
+  position: relative; z-index: 2;
+  order: 3; width: 100%; margin-left: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px;
+  border-radius: 14px; background: var(--card-bg); border: 1px solid var(--line);
+}
 .tab {
-  display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0;
-  padding: 8px 14px; border-radius: 10px; font-size: 13.5px; font-weight: 600; color: var(--muted);
+  position: relative; z-index: 1; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;
+  padding: 6px 10px; border-radius: 9px; font-size: 12.5px; font-weight: 600; color: var(--muted);
   transition: background .2s, color .2s;
 }
 .tab:hover { background: var(--hover); color: var(--page-fg); }
 .tab[aria-current="page"] { background: var(--accent); color: #fff; box-shadow: 0 8px 20px -8px rgba(124, 58, 237, 0.55); }
-.tab svg { width: 16px; height: 16px; }
+.tab svg { width: 15px; height: 15px; flex-shrink: 0; }
 .tab .count { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--bad-soft); color: var(--bad-ink); }
 .tab[aria-current="page"] .count { background: rgba(255,255,255,.22); color: #fff; }
 
-.user-menu { display: flex; align-items: center; gap: 8px; }
+.user-menu { position: relative; z-index: 2; display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .avatar { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: var(--accent-soft); color: var(--accent-ink); }
 
 /* ---------- 4. Tarjetas ---------- */
@@ -443,9 +451,6 @@ dialog form { display: contents; }
 .hide-sm { }
 @media (max-width: 720px) {
   .shell { padding: 0 12px 48px; }
-  .topbar { flex-wrap: wrap; gap: 10px; }
-  .nav { order: 3; width: 100%; margin-left: 0; }
-  .user-menu { margin-left: auto; }
   .hide-sm { display: none !important; }
   .brand-sub { display: none; }
 }
@@ -456,3 +461,35 @@ dialog form { display: contents; }
   .topbar, .toolbar, .filters, .filters-more, .pager, .c-actions { display: none !important; }
   body { background: #fff; }
 }
+
+/* ---------- 20. Carga masiva (Excel) ---------- */
+.seg { display: inline-flex; padding: 3px; border-radius: 11px; background: var(--hover); border: 1px solid var(--line); gap: 3px; }
+.seg-btn {
+  border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 13px; border-radius: 8px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s;
+}
+.seg-btn:hover { color: var(--page-fg); }
+.seg-btn[aria-selected="true"] { background: var(--card-solid); color: var(--page-fg); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+
+.dropzone {
+  border: 2px dashed var(--line-strong); border-radius: var(--r-lg); padding: 28px 20px; text-align: center;
+  background: var(--hover); transition: border-color .15s, background .15s; cursor: pointer;
+}
+.dropzone:hover, .dropzone.is-drag { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone svg { width: 28px; height: 28px; color: var(--accent-ink); margin-bottom: 6px; }
+.dropzone b { display: block; font-size: 14px; }
+.dropzone span { display: block; font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.masivo-stats { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.masivo-err-list { margin: 0; padding-left: 16px; font-size: 12px; color: var(--bad-ink); }
+.grid tr.row-bad td { background: var(--bad-soft); }
+.grid tr.row-warn td { background: var(--warn-soft); }
+
+.homolog-box { border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 14px; background: var(--hover); }
+.homolog-list { display: grid; gap: 10px; margin-top: 10px; }
+.homolog-item {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border-radius: var(--r-sm); background: var(--card-solid); border: 1px solid var(--line);
+}
+.homolog-meta { display: grid; gap: 4px; min-width: 240px; flex: 1; }
+.homolog-ctrl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.homolog-ctrl select { min-width: 240px; max-width: 340px; min-height: 34px; padding: 4px 10px; font-size: 13px; }

@@ -2,6 +2,8 @@
 <!--
   ============================================================================
   Seguimiento de Carta de Agregados
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
+  Página: https://erosamhi2026.github.io/seguimiento-agregados/
   ----------------------------------------------------------------------------
   Altas, bajas, cambios y consultas de servicios agregados.
   Base de datos: Supabase · Publicación: GitHub Pages
@@ -51,6 +53,7 @@
       <symbol id="i-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
       <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4m0 0-4 4m4-4 4 4M5 20h14"/></symbol>
       <symbol id="i-cal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
       <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></symbol>
       <symbol id="i-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m14 6-6 6 6 6"/></symbol>
@@ -124,6 +127,7 @@
       <nav class="nav" aria-label="Secciones">
         <a class="tab" href="#consulta" data-view="consulta"><svg><use href="#i-table"/></svg>Consulta<span class="count" id="nav-vencidos" hidden></span></a>
         <a class="tab" href="#nuevo" data-view="nuevo"><svg><use href="#i-plus"/></svg>Nuevo agregado</a>
+        <a class="tab" href="#actualizar" data-view="actualizar"><svg><use href="#i-edit"/></svg>Actualizar agregado</a>
         <a class="tab" href="#catalogos" data-view="catalogos"><svg><use href="#i-list"/></svg>Catálogos</a>
         <a class="tab" href="#correos" data-view="correos"><svg><use href="#i-mail"/></svg>Correos y respaldo</a>
       </nav>
@@ -236,11 +240,29 @@
         <div class="card card-pad">
           <div class="card-head">
             <div>
-              <h2 class="card-title">Nuevo agregado</h2>
-              <p class="card-hint">Todos los campos con <span style="color:var(--bad)">*</span> son obligatorios. Al guardar se conservan cliente, proveedor, solicitante, tipo, contrarrecibo y fecha para capturar el siguiente estudio más rápido.</p>
+              <h2 class="card-title" id="nuevo-title">Nuevo agregado</h2>
+              <p class="card-hint" id="nuevo-hint">Todos los campos con <span style="color:var(--bad)">*</span> son obligatorios. Al guardar se conservan cliente, proveedor, solicitante, tipo, contrarrecibo y fecha para capturar el siguiente estudio más rápido.</p>
+            </div>
+            <div class="seg" role="tablist" aria-label="Modo de captura">
+              <button class="seg-btn" type="button" role="tab" data-nuevo-modo="uno" aria-selected="true">Uno por uno</button>
+              <button class="seg-btn" type="button" role="tab" data-nuevo-modo="masivo" aria-selected="false">Carga masiva (Excel)</button>
             </div>
           </div>
           <div id="form-nuevo" class="mt-16"></div>
+          <div id="masivo-wrap" class="mt-16" hidden></div>
+        </div>
+      </section>
+
+      <!-- ============ ACTUALIZAR AGREGADO ============ -->
+      <section id="view-actualizar" class="view" data-view="actualizar" hidden>
+        <div class="card card-pad">
+          <div class="card-head">
+            <div>
+              <h2 class="card-title">Actualizar agregado</h2>
+              <p class="card-hint">Actualiza de forma masiva la <b>fecha de carga</b>, el <b>estatus</b> y las <b>notas</b> de registros que ya existen en la base, buscando por <b>NUR</b> (y <b>CPT</b> si hay más de un estudio).</p>
+            </div>
+          </div>
+          <div id="actualizar-wrap" class="mt-16"></div>
         </div>
       </section>
 
@@ -400,6 +422,14 @@
       <button class="icon-btn plain" type="button" data-close aria-label="Cerrar"><svg><use href="#i-x"/></svg></button>
     </div>
     <div class="dlg-body dlg-scroll"><ul class="hist" id="hist-list"></ul></div>
+  </dialog>
+
+  <dialog id="dlg-nur" aria-labelledby="dlg-nur-title">
+    <div class="dlg-head">
+      <div><h2 class="card-title" id="dlg-nur-title">Registros con este NUR</h2><p class="card-hint" id="dlg-nur-sub"></p></div>
+      <button class="icon-btn plain" type="button" data-close aria-label="Cerrar"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div class="dlg-body dlg-scroll" id="dlg-nur-body"></div>
   </dialog>
 
   <dialog id="dlg-confirm" class="sm" aria-labelledby="dlg-confirm-title">

@@ -1,3 +1,11 @@
+# ============================================================================
+#  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
+#  Tarea automática de GitHub Actions que ejecuta el respaldo en Excel de cada viernes.
+#  Los datos de conexión NO están aquí: vienen de Settings → Secrets and
+#  variables → Actions (Secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+#  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM · Variable: APP_URL).
+#  Se puede correr a mano en Actions → (esta tarea) → Run workflow.
+# ============================================================================
 name: Respaldo semanal en Excel
 
 on:

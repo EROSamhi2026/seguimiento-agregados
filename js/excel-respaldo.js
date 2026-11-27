@@ -1,6 +1,12 @@
 /*
   ============================================================================
   Generador del Excel de respaldo — mismo formato que el archivo original
+  Autor: Guillermo Navarrete (gnavarrete@amhi.mx)
+  ----------------------------------------------------------------------------
+  Uso este mismo archivo en la página y en GitHub Actions para que el Excel
+  manual y el automático salgan idénticos. Aquí también armo:
+    • consulta()              → la exportación de lo filtrado en Consulta
+    • concentradoProveedor()  → el Excel que se manda a cada proveedor
   ----------------------------------------------------------------------------
   Lo usan:
     • La página (botones "Exportar" y "Descargar respaldo ahora")

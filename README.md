@@ -1,5 +1,12 @@
 # Seguimiento de Carta de Agregados
 
+> **Autor:** Guillermo Navarrete (gnavarrete@amhi.mx)  
+> **Página:** https://erosamhi2026.github.io/seguimiento-agregados/  
+> **Repositorio:** EROSamhi2026/seguimiento-agregados  
+> **Supabase:** proyecto *seguimiento-agregados* (us-east-2), organización *homologador*  
+> **Conexión de la página a Supabase:** archivo `config.js`  
+> Manuales completos (usuario, modo vista, técnico) en el paquete de entrega.  
+
 Sistema web para dar de alta, consultar, modificar y dar de baja servicios agregados. Sustituye la hoja **AGREGADOS 2026** del Excel.
 
 - **Base de datos:** Supabase (ya migrada, 526 registros).
